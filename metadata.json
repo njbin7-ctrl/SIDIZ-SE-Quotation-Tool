@@ -1,5 +1,0 @@
-{
-  "name": "SIDIZ SE Quotation Tool",
-  "description": "시디즈 오프라인 매장 SE들을 위한 실시간 견적 지원 도구입니다. 구글 시트와 연동되어 최적의 할인 혜택을 자동으로 계산합니다.",
-  "requestFramePermissions": []
-}
