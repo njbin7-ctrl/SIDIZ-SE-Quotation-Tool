@@ -8,10 +8,14 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Noto Sans KR', sans-serif; height: 100vh; overflow: hidden; background-color: #f9fafb; }
-        .scroll-hide::-webkit-scrollbar { display: none; }
+        body { font-family: 'Noto Sans KR', sans-serif; height: 100vh; overflow: hidden; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
     </style>
 </head>
 <body>
@@ -20,220 +24,265 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
 
-        // SE님이 사용하시는 구글 시트 주소입니다.
-        const SHEET_URL = "https://docs.google.com/spreadsheets/d/1af5u1NNvYs_ygLw3CnfWiZrp_IkvLcmUs1edO52p1kU/gviz/tq?tqx=out:csv&gid=1647057314";
+        // 구글 시트 데이터 주소 (CSV 추출 모드)
+        const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1af5u1NNvYs_ygLw3CnfWiZrp_IkvLcmUs1edO52p1kU/gviz/tq?tqx=out:csv&gid=1647057314";
 
         function App() {
-            const [products, setProducts] = useState([]);
-            const [promotions, setPromotions] = useState([]);
-            const [naverLive, setNaverLive] = useState("");
+            const [storeData, setStoreData] = useState(null);
             const [cart, setCart] = useState([]);
-            const [selectedPromo, setSelectedPromo] = useState("none");
+            const [searchQuery, setSearchQuery] = useState('');
+            const [selectedCategory, setSelectedCategory] = useState('전체');
+            const [selectedSubcategory, setSelectedSubcategory] = useState('전체');
+            const [selectedPromo, setSelectedPromo] = useState('혜택을 선택하세요');
+            const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
+            const [loading, setLoading] = useState(true);
+            const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+            const [error, setError] = useState(null);
             const [savedQuotes, setSavedQuotes] = useState([]);
-            const [searchTerm, setSearchTerm] = useState("");
-            const [category, setCategory] = useState("전체");
+            const [isPromoExpanded, setIsPromoExpanded] = useState(false);
+            const [modalConfig, setModalConfig] = useState(null);
 
-            // 구글 시트에서 실시간 데이터를 가져오는 함수
+            // 데이터 불러오기 및 파싱
             useEffect(() => {
-                fetch(SHEET_URL)
-                    .then(res => res.text())
-                    .then(data => {
-                        const rows = data.split('\n').map(row => row.split(',').map(cell => cell.replace(/"/g, '')));
-                        
-                        // 네이버 라방 일정 (B5)
-                        setNaverLive(rows[4] ? rows[4][1] : "일정 확인 중");
+                const loadData = async () => {
+                    try {
+                        const response = await fetch(SHEET_CSV_URL);
+                        const csvText = await response.text();
+                        const rows = csvText.split('\n').map(row => 
+                            row.split(',').map(cell => cell.replace(/^"(.*)"$/, '$1'))
+                        );
 
-                        // 프로모션 안내 (10-12행)
-                        const promoData = [];
-                        if(rows[8]) {
-                            for(let i=1; i<=4; i++) {
-                                if(rows[8][i]) promoData.push({ title: rows[8][i], content: rows[10][i] });
-                            }
-                        }
-                        setPromotions(promoData);
-
-                        // 제품 데이터 (30행부터)
-                        const productData = rows.slice(29).filter(r => r[2]).map(r => ({
-                            series: r[0],
-                            cat: r[1],
-                            name: r[2],
-                            code: r[3],
-                            priceMsrp: parseInt(r[4]) || 0,
-                            priceOnline: parseInt(r[5]) || 0
-                        }));
-                        setProducts(productData);
-                    });
+                        const data = {
+                            naverLiveDate: rows[4] ? rows[4][1] : "",
+                            events: [
+                                { name: rows[9][1], details: rows[11][1] },
+                                { name: rows[9][2], details: rows[11][2] },
+                                { name: rows[9][3], details: rows[11][3] },
+                                { name: rows[9][4], details: rows[11][4] }
+                            ].filter(e => e.name),
+                            coupons: rows.slice(16, 17)[0].slice(1, 7).map((rate, i) => ({
+                                name: `쿠폰 ${i+1}단계`,
+                                discountRate: parseFloat(rate.replace('%', '')) / 100
+                            })).filter(c => !isNaN(c.discountRate)),
+                            products: rows.slice(29).filter(r => r[2]).map(r => ({
+                                series: r[0],
+                                subcategory: r[1],
+                                name: r[2],
+                                code: r[3],
+                                retailPrice: parseInt(r[4]) || 0,
+                                onlinePrice: parseInt(r[5]) || 0
+                            }))
+                        };
+                        setStoreData(data);
+                        setLoading(false);
+                    } catch (err) {
+                        setError("데이터를 불러오지 못했습니다. 시트 권한을 확인해주세요.");
+                        setLoading(false);
+                    }
+                };
+                loadData();
             }, []);
 
-            // 가격 및 할인율 실시간 계산
-            const totals = useMemo(() => {
-                const baseOnlineTotal = cart.reduce((sum, item) => sum + (item.priceOnline * item.count), 0);
-                const baseMsrpTotal = cart.reduce((sum, item) => sum + (item.priceMsrp * item.count), 0);
+            // 필터링 및 계산 로직 (기존 코드 로직 이식)
+            const seriesList = useMemo(() => {
+                if (!storeData) return [];
+                const series = new Set();
+                storeData.products.forEach(p => series.add(p.series));
+                return Array.from(series);
+            }, [storeData]);
+
+            const categoryList = useMemo(() => {
+                if (!storeData || selectedCategory === '전체') return [];
+                const cats = new Set();
+                storeData.products.forEach(p => {
+                    if (p.series === selectedCategory) cats.add(p.subcategory);
+                });
+                return Array.from(cats);
+            }, [storeData, selectedCategory]);
+
+            const filteredProducts = useMemo(() => {
+                if (!storeData) return [];
+                const query = searchQuery.toLowerCase();
+                return storeData.products.filter(p => {
+                    if (query) return p.name.toLowerCase().includes(query) || p.code.toLowerCase().includes(query);
+                    const matchS = selectedCategory === '전체' || p.series === selectedCategory;
+                    const matchC = selectedSubcategory === '전체' || p.subcategory === selectedSubcategory;
+                    return matchS && matchC;
+                });
+            }, [storeData, searchQuery, selectedCategory, selectedSubcategory]);
+
+            const calculationResult = useMemo(() => {
+                if (!storeData || cart.length === 0) return null;
+                const totalRetail = cart.reduce((s, i) => s + (i.retailPrice * i.quantity), 0);
+                const totalOnline = cart.reduce((s, i) => s + (i.onlinePrice * i.quantity), 0);
                 
-                let finalPrice = baseOnlineTotal;
-                if (selectedPromo === "5000") finalPrice -= 5000;
-                else if (selectedPromo.includes("%")) {
-                    const rate = parseInt(selectedPromo) / 100;
-                    finalPrice = baseOnlineTotal * (1 - rate);
+                let finalTotal = totalOnline;
+                let appliedPromo = selectedPromo;
+
+                if (selectedPromo === "신규 회원 할인 (-5,000원)") finalTotal -= 5000;
+                else if (selectedPromo.includes("할인")) {
+                    const rateStr = selectedPromo.match(/\d+/);
+                    if (rateStr) finalTotal = totalOnline * (1 - parseInt(rateStr[0]) / 100);
+                } else if (selectedPromo.includes("쿠폰")) {
+                    const coupon = storeData.coupons.find(c => selectedPromo.includes(c.name));
+                    if (coupon) finalTotal = totalOnline * (1 - coupon.discountRate);
                 }
 
-                const discountFromMsrp = baseMsrpTotal > 0 ? ((1 - finalPrice / baseMsrpTotal) * 100).toFixed(1) : 0;
-                const discountFromOnline = baseOnlineTotal > 0 ? ((1 - finalPrice / baseOnlineTotal) * 100).toFixed(1) : 0;
+                return {
+                    items: cart,
+                    totalRetailPrice: totalRetail,
+                    totalOnlinePrice: totalOnline,
+                    finalTotalPrice: finalTotal,
+                    retailDiscountRate: ((1 - finalTotal / totalRetail) * 100),
+                    onlineDiscountRate: ((1 - finalTotal / totalOnline) * 100),
+                    appliedDiscountName: appliedPromo
+                };
+            }, [cart, storeData, selectedPromo]);
 
-                return { finalPrice, baseMsrpTotal, baseOnlineTotal, discountFromMsrp, discountFromOnline };
-            }, [cart, selectedPromo]);
-
+            // 핸들러 함수들
             const addToCart = (p) => {
-                const existing = cart.find(item => item.code === p.code);
-                if (existing) {
-                    setCart(cart.map(item => item.code === p.code ? {...item, count: item.count + 1} : item));
-                } else {
-                    setCart([...cart, {...p, count: 1}]);
-                }
+                setCart(prev => {
+                    const ext = prev.find(i => i.code === p.code);
+                    if (ext) return prev.map(i => i.code === p.code ? {...i, quantity: i.quantity + 1} : i);
+                    return [...prev, {...p, id: Math.random().toString(36).substr(2, 9), quantity: 1}];
+                });
             };
 
+            const handleDownloadPdf = async () => {
+                const element = document.getElementById('pdf-template');
+                element.style.display = 'block';
+                setIsGeneratingPdf(true);
+                const canvas = await html2canvas(element, { scale: 2 });
+                const imgData = canvas.toDataURL('image/png');
+                const pdf = new jspdf.jsPDF('p', 'mm', 'a4');
+                pdf.addImage(imgData, 'PNG', 0, 0, 210, (canvas.height * 210) / canvas.width);
+                pdf.save(`시디즈_견적서_${new Date().toISOString().slice(0,10)}.pdf`);
+                element.style.display = 'none';
+                setIsGeneratingPdf(false);
+            };
+
+            if (loading) return <div className="h-screen flex items-center justify-center font-bold text-indigo-600 animate-pulse">SIDIZ SE 데이터 로딩 중...</div>;
+
             return (
-                <div className="flex flex-col h-screen overflow-hidden">
-                    {/* 섹션 1: 상단 프로모션 고정 영역 */}
-                    <div className="bg-white border-b p-4 flex-shrink-0 z-10 shadow-sm">
-                        <div className="flex justify-between items-center mb-4">
-                            <h1 className="text-2xl font-black text-slate-800">SIDIZ <span className="text-blue-600">SE</span></h1>
-                            <div className="bg-emerald-500 text-white px-4 py-1 rounded-full text-xs font-bold">
-                                🟢 NAVER LIVE : {naverLive}
-                            </div>
-                        </div>
-                        <div className="flex gap-3 overflow-x-auto pb-1 scroll-hide">
-                            {promotions.map((p, i) => (
-                                <div key={i} className="min-w-[200px] bg-slate-50 p-3 rounded-xl border border-slate-100 flex-shrink-0">
-                                    <div className="font-bold text-blue-700 text-xs mb-1">{p.title}</div>
-                                    <div className="text-[11px] text-slate-500 leading-tight">{p.content}</div>
+                <div className="h-screen flex flex-row bg-gray-50 font-sans text-gray-900 overflow-hidden">
+                    {/* 메인 로직 UI 시작 (AI 스튜디오에서 제공한 디자인) */}
+                    <div className="flex-1 flex flex-col h-full overflow-hidden bg-white">
+                        <header className="flex-shrink-0 z-50 bg-white border-b p-4 shadow-sm">
+                            <div className="flex justify-between items-center max-w-[1600px] mx-auto">
+                                <h1 className="text-xl font-black cursor-pointer" onClick={() => window.location.reload()}>SIDIZ <span className="text-indigo-600">SE</span></h1>
+                                <div className="bg-[#03C75A] text-white px-4 py-1.5 rounded-lg text-sm font-bold shadow-sm flex items-center gap-2">
+                                    <span className="text-[10px] opacity-80 uppercase">Naver Live</span> {storeData.naverLiveDate}
                                 </div>
-                            ))}
-                        </div>
-                    </div>
-
-                    <div className="flex flex-1 overflow-hidden">
-                        {/* 섹션 2: 좌측 제품 탐색 영역 */}
-                        <div className="flex-1 flex flex-col p-4 overflow-hidden">
-                            <input 
-                                type="text" 
-                                placeholder="제품명 또는 단품코드를 검색하세요" 
-                                className="w-full p-4 border-2 border-slate-100 rounded-2xl mb-4 focus:border-blue-500 outline-none transition-all shadow-inner bg-white"
-                                onChange={(e) => setSearchTerm(e.target.value)}
-                            />
-                            <div className="flex gap-2 mb-4 overflow-x-auto scroll-hide">
-                                {["전체", "게이밍", "워크", "스터디", "리빙"].map(cat => (
-                                    <button 
-                                        key={cat}
-                                        onClick={() => setCategory(cat)}
-                                        className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${category === cat ? 'bg-slate-800 text-white' : 'bg-white border text-slate-400'}`}
-                                    >
-                                        {cat}
-                                    </button>
-                                ))}
                             </div>
-                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 overflow-y-auto pr-2 pb-10">
-                                {products
-                                    .filter(p => (category === "전체" || p.series.includes(category) || p.cat.includes(category)))
-                                    .filter(p => p.name.includes(searchTerm) || p.code.includes(searchTerm))
-                                    .map((p, i) => (
-                                    <div key={i} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-blue-400 transition-all cursor-pointer group" onClick={() => addToCart(p)}>
-                                        <div className="text-[10px] text-slate-300 font-bold mb-1 uppercase tracking-wider">{p.cat}</div>
-                                        <div className="font-bold text-slate-700 text-sm mb-3 truncate group-hover:text-blue-600">{p.name}</div>
-                                        <div className="text-[11px] text-slate-300 mb-1">소비자가 {p.priceMsrp.toLocaleString()}</div>
-                                        <div className="font-extrabold text-slate-800">온라인 {p.priceOnline.toLocaleString()}원</div>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-
-                        {/* 섹션 3: 우측 견적 대시보드 (위아래로 긴 패널) */}
-                        <div className="w-80 bg-slate-50 border-l border-slate-200 flex flex-col shadow-2xl z-20">
-                            <div className="p-5 border-b bg-white flex justify-between items-center">
-                                <h2 className="font-black text-slate-800">🛒 견적함</h2>
-                                <span className="bg-blue-100 text-blue-600 text-[10px] px-2 py-0.5 rounded-full font-bold">{cart.length} ITEMS</span>
-                            </div>
-                            
-                            <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                                {cart.map(item => (
-                                    <div key={item.code} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 relative group">
-                                        <button onClick={() => setCart(cart.filter(c => c.code !== item.code))} className="absolute top-2 right-2 text-slate-200 hover:text-red-400">✕</button>
-                                        <div className="font-bold text-slate-700 text-xs mb-2 pr-4">{item.name}</div>
-                                        <div className="flex justify-between items-center">
-                                            <span className="text-xs font-bold text-slate-400">{item.priceOnline.toLocaleString()}원</span>
-                                            <div className="flex items-center bg-slate-100 rounded-lg px-2">
-                                                <button onClick={() => {
-                                                    if(item.count > 1) setCart(cart.map(c => c.code === item.code ? {...c, count: c.count - 1} : c));
-                                                }} className="p-1 text-slate-400">-</button>
-                                                <span className="px-3 text-xs font-bold">{item.count}</span>
-                                                <button onClick={() => addToCart(item)} className="p-1 text-slate-400">+</button>
+                            <div className="mt-3 max-w-[1600px] mx-auto">
+                                <button onClick={() => setIsPromoExpanded(!isPromoExpanded)} className="flex items-center text-[11px] font-bold text-gray-400 gap-1 uppercase tracking-wider">
+                                    <i data-lucide="info" className="w-3 h-3"></i> 현재 진행 중인 프로모션 안내 ({storeData.events.length})
+                                </button>
+                                {isPromoExpanded && (
+                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2 animate-in fade-in slide-in-from-top-1">
+                                        {storeData.events.map((ev, i) => (
+                                            <div key={i} className="bg-gray-50 p-2 rounded border border-gray-100">
+                                                <div className="text-[10px] font-bold text-indigo-600">{ev.name}</div>
+                                                <div className="text-[9px] text-gray-500 line-clamp-2">{ev.details}</div>
                                             </div>
-                                        </div>
-                                    </div>
-                                ))}
-                                {cart.length === 0 && (
-                                    <div className="h-full flex flex-col items-center justify-center opacity-20 mt-20">
-                                        <span className="text-4xl mb-2">🪑</span>
-                                        <p className="text-xs font-bold">제품을 담아주세요</p>
+                                        ))}
                                     </div>
                                 )}
                             </div>
+                        </header>
 
-                            <div className="p-5 bg-white border-t border-slate-200 space-y-4">
-                                <div className="space-y-1">
-                                    <p className="text-[10px] font-bold text-slate-400 ml-1">최종 혜택 선택</p>
-                                    <select 
-                                        className="w-full p-3 bg-slate-50 border-none rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"
-                                        value={selectedPromo}
-                                        onChange={(e) => setSelectedPromo(e.target.value)}
-                                    >
-                                        <option value="none">적용할 혜택을 선택하세요</option>
-                                        <option value="5000">신규 회원 할인 (-5,000원)</option>
-                                        <option value="3%">단품 구매 할인 (3%)</option>
-                                        <option value="5%">세트/2개 이상 할인 (5%)</option>
-                                        <option value="7%">쿠폰 3단계 할인 (7%)</option>
-                                        <option value="10%">쿠폰 4단계 할인 (10%)</option>
-                                        <option value="15%">쿠폰 6단계 할인 (15%)</option>
-                                    </select>
+                        <main className="flex-1 overflow-y-auto p-4 lg:p-8">
+                            <div className="max-w-[1600px] mx-auto space-y-6">
+                                <div className="relative">
+                                    <input 
+                                        type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                                        placeholder="제품명 또는 코드를 검색하세요..."
+                                        className="w-full p-4 pl-12 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-indigo-500 shadow-inner"
+                                    />
+                                    <div className="absolute left-4 top-4 text-gray-400"><i data-lucide="search"></i></div>
                                 </div>
 
-                                <div className="pt-2 space-y-1 text-right border-t border-dashed">
-                                    <div className="text-[10px] text-slate-300">정상가 {totals.baseMsrpTotal.toLocaleString()}원</div>
-                                    <div className="text-2xl font-black text-blue-600 tracking-tighter">
-                                        {totals.finalPrice.toLocaleString()}원
-                                    </div>
-                                    <div className="flex justify-end gap-2 text-[10px] font-black uppercase">
-                                        <span className="text-purple-400">정상가 대비 {totals.discountFromMsrp}% 할인</span>
-                                        <span className="text-emerald-400">온라인 대비 {totals.discountFromOnline}% 추가혜택</span>
-                                    </div>
-                                </div>
-
-                                <div className="flex gap-2 pt-2">
-                                    <button onClick={() => {
-                                        if(cart.length > 0) {
-                                            const newQuote = { id: Date.now(), cart: [...cart], promo: selectedPromo, total: totals.finalPrice };
-                                            setSavedQuotes([newQuote, ...savedQuotes].slice(0, 3));
-                                        }
-                                    }} className="flex-1 py-3 bg-slate-100 text-slate-500 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all">기억하기</button>
-                                    <button onClick={() => window.print()} className="flex-[2] py-3 bg-blue-600 text-white rounded-xl text-xs font-black shadow-lg shadow-blue-100 hover:bg-blue-700 transition-all">견적서 저장</button>
-                                </div>
-                                
-                                <div className="flex gap-1 overflow-x-auto scroll-hide">
-                                    {savedQuotes.map((q, i) => (
-                                        <button key={q.id} onClick={() => { if(confirm("이전 견적을 불러올까요?")) { setCart(q.cart); setSelectedPromo(q.promo); } }} className="flex-shrink-0 bg-blue-50 text-[9px] px-2 py-1 rounded-md border border-blue-100 font-bold text-blue-400">
-                                            #{savedQuotes.length-i} ({q.total.toLocaleString()})
+                                <div className="flex gap-2 overflow-x-auto no-scrollbar">
+                                    {['전체', ...seriesList].map(s => (
+                                        <button key={s} onClick={() => {setSelectedCategory(s); setSelectedSubcategory('전체');}}
+                                            className={`px-5 py-2 rounded-xl text-sm font-bold whitespace-nowrap transition-all ${selectedCategory === s ? 'bg-gray-900 text-white shadow-lg' : 'bg-white border text-gray-500'}`}>
+                                            {s}
                                         </button>
                                     ))}
                                 </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            );
-        }
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
-</body>
-</html>
+                                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                                    {filteredProducts.map((p, i) => (
+                                        <div key={i} onClick={() => addToCart(p)} className="bg-white border rounded-2xl p-4 hover:border-indigo-500 hover:shadow-xl transition-all cursor-pointer group flex flex-col h-full">
+                                            <div className="text-[9px] font-black text-indigo-400 mb-1 uppercase tracking-tighter">{p.series} | {p.subcategory}</div>
+                                            <div className="font-bold text-sm text-gray-800 mb-1 line-clamp-1">{p.name}</div>
+                                            <div className="text-[10px] text-gray-300 font-mono mb-4">{p.code}</div>
+                                            <div className="mt-auto pt-3 border-t border-gray-50 flex justify-between items-end">
+                                                <div>
+                                                    <div className="text-[9px] text-gray-300">소비자가 {p.retailPrice.toLocaleString()}</div>
+                                                    <div className="text-base font-black text-gray-900 leading-none">{p.onlinePrice.toLocaleString()}원</div>
+                                                </div>
+                                                <div className="w-8 h-8 rounded-full bg-gray-50 group-hover:bg-indigo-600 group-hover:text-white flex items-center justify-center transition-colors"><i data-lucide="plus" className="w-4 h-4"></i></div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </main>
+                    </div>
+
+                    {/* 섹션 3: 견적 대시보드 */}
+                    <aside className="w-[320px] bg-slate-50 border-l border-gray-200 flex flex-col shadow-2xl z-20">
+                        <div className="p-5 border-b bg-white flex justify-between items-center">
+                            <h2 className="font-bold text-gray-900 flex items-center gap-2"><i data-lucide="shopping-cart" className="w-4 h-4 text-indigo-600"></i> 견적함</h2>
+                            <span className="bg-indigo-100 text-indigo-600 text-[10px] px-2 py-0.5 rounded-full font-bold">{cart.length}개</span>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                            {cart.map(item => (
+                                <div key={item.id} className="bg-white p-3 rounded-xl border shadow-sm relative group">
+                                    <button onClick={() => setCart(cart.filter(c => c.id !== item.id))} className="absolute top-2 right-2 text-gray-300 hover:text-red-500">✕</button>
+                                    <div className="text-xs font-bold text-gray-800 pr-4 mb-2">{item.name}</div>
+                                    <div className="flex justify-between items-center">
+                                        <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+                                            <button onClick={() => item.quantity > 1 && setCart(cart.map(c => c.id === item.id ? {...c, quantity: c.quantity-1} : c))} className="px-2 text-gray-400">-</button>
+                                            <span className="px-2 text-xs font-bold">{item.quantity}</span>
+                                            <button onClick={() => addToCart(item)} className="px-2 text-gray-400">+</button>
+                                        </div>
+                                        <span className="text-xs font-black text-gray-900">{(item.onlinePrice * item.quantity).toLocaleString()}원</span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        {calculationResult && (
+                            <div className="p-5 bg-white border-t space-y-4">
+                                <select value={selectedPromo} onChange={(e) => setSelectedPromo(e.target.value)} 
+                                    className="w-full p-3 bg-gray-50 border-none rounded-xl text-xs font-bold focus:ring-2 focus:ring-indigo-500 outline-none text-indigo-600">
+                                    <option value="혜택을 선택하세요">혜택을 선택하세요</option>
+                                    <option value="신규 회원 할인 (-5,000원)">신규 회원 할인 (-5,000원)</option>
+                                    <option value="단품 3% 할인">단품 3% 할인</option>
+                                    <option value="2개 이상 5% 할인">2개 이상 5% 할인</option>
+                                    {storeData.coupons.map(c => <option key={c.name} value={c.name}>[{c.name}] {Math.round(c.discountRate*100)}% 할인</option>)}
+                                </select>
+                                <div className="text-right space-y-1">
+                                    <div className="text-[10px] text-gray-300">정상가 {calculationResult.totalRetailPrice.toLocaleString()}원</div>
+                                    <div className="text-2xl font-black text-indigo-600 tracking-tighter">{calculationResult.finalTotalPrice.toLocaleString()}원</div>
+                                    <div className="flex justify-end gap-2 text-[9px] font-bold">
+                                        <span className="text-purple-400">정상가 대비 {calculationResult.retailDiscountRate.toFixed(1)}%</span>
+                                        <span className="text-emerald-400">온라인 대비 {calculationResult.onlineDiscountRate.toFixed(1)}%</span>
+                                    </div>
+                                </div>
+                                <div className="flex gap-2">
+                                    <button onClick={() => {if(cart.length > 0) setSavedQuotes([...savedQuotes, {cart, selectedPromo, total: calculationResult.finalTotalPrice}].slice(-3));}} className="flex-1 py-3 bg-gray-100 rounded-xl text-xs font-bold text-gray-400 hover:bg-gray-200">기억하기</button>
+                                    <button onClick={handleDownloadPdf} className="flex-[2] py-3 bg-gray-900 text-white rounded-xl text-xs font-bold shadow-xl">견적서 저장</button>
+                                </div>
+                            </div>
+                        )}
+                    </aside>
+
+                    {/* PDF 템플릿 영역 (숨김) */}
+                    <div id="pdf-template" className="hidden fixed bg-white p-10 w-[800px] text-black">
+                        <div className="border-b-4 border-black pb-5 mb-10 flex justify-between items-end">
+                            <div className="text-4xl font-black">SIDIZ</div>
+                            <div className="text-right">
+                                <h1 className="text-2xl font-bold">견적 상세 내역</h1>
+                                <p className="text-sm text
