@@ -1,880 +1,239 @@
-import { useEffect, useState, useMemo } from 'react';
-import { Search, ShoppingCart, Trash2, Info, Calendar, Plus, CheckCircle2, ChevronDown, ChevronUp, X } from 'lucide-react';
-import { fetchStoreData, StoreData, Product, CartItem } from './services/dataService';
-import { calculateBestPrice, CalculationResult, FIXED_PROMO_OPTIONS } from './services/calculator';
-import html2canvas from 'html2canvas';
-import jsPDF from 'jspdf';
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SIDIZ SE Quotation Tool</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Noto Sans KR', sans-serif; height: 100vh; overflow: hidden; background-color: #f9fafb; }
+        .scroll-hide::-webkit-scrollbar { display: none; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
 
-export default function App() {
-  const [storeData, setStoreData] = useState<StoreData | null>(null);
-  const [cart, setCart] = useState<CartItem[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('전체');
-  const [selectedSubcategory, setSelectedSubcategory] = useState('전체');
-  const [selectedPromo, setSelectedPromo] = useState('혜택을 선택하세요');
-  const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [savedQuotes, setSavedQuotes] = useState<{id: string, totalPrice: number, timestamp: Date, cart: CartItem[], selectedPromo: string}[]>([]);
-  const [isPromoExpanded, setIsPromoExpanded] = useState(false);
-  const [modalConfig, setModalConfig] = useState<{title: string, message: string, onConfirm?: () => void, isAlert?: boolean} | null>(null);
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
 
-  // Prevent body scroll when mobile cart is open
-  useEffect(() => {
-    if (isMobileCartOpen) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = '';
-    }
-    return () => {
-      document.body.style.overflow = '';
-    };
-  }, [isMobileCartOpen]);
+        // SE님이 사용하시는 구글 시트 주소입니다.
+        const SHEET_URL = "https://docs.google.com/spreadsheets/d/1af5u1NNvYs_ygLw3CnfWiZrp_IkvLcmUs1edO52p1kU/gviz/tq?tqx=out:csv&gid=1647057314";
 
-  const loadData = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await fetchStoreData();
-      setStoreData(data);
-    } catch (err) {
-      console.error('Failed to load store data:', err);
-      setError(err instanceof Error ? err.message : '데이터를 불러오는 데 실패했습니다. 네트워크 연결을 확인해주세요.');
-    } finally {
-      setLoading(false);
-    }
-  };
+        function App() {
+            const [products, setProducts] = useState([]);
+            const [promotions, setPromotions] = useState([]);
+            const [naverLive, setNaverLive] = useState("");
+            const [cart, setCart] = useState([]);
+            const [selectedPromo, setSelectedPromo] = useState("none");
+            const [savedQuotes, setSavedQuotes] = useState([]);
+            const [searchTerm, setSearchTerm] = useState("");
+            const [category, setCategory] = useState("전체");
 
-  useEffect(() => {
-    loadData();
-  }, []);
+            // 구글 시트에서 실시간 데이터를 가져오는 함수
+            useEffect(() => {
+                fetch(SHEET_URL)
+                    .then(res => res.text())
+                    .then(data => {
+                        const rows = data.split('\n').map(row => row.split(',').map(cell => cell.replace(/"/g, '')));
+                        
+                        // 네이버 라방 일정 (B5)
+                        setNaverLive(rows[4] ? rows[4][1] : "일정 확인 중");
 
-  const seriesList = useMemo(() => {
-    if (!storeData) return [];
-    const series = new Set<string>();
-    storeData.products.forEach(p => {
-      if (p.series) series.add(p.series.normalize('NFC'));
-    });
-    return Array.from(series); // Removed .sort() to maintain sheet order
-  }, [storeData]);
+                        // 프로모션 안내 (10-12행)
+                        const promoData = [];
+                        if(rows[8]) {
+                            for(let i=1; i<=4; i++) {
+                                if(rows[8][i]) promoData.push({ title: rows[8][i], content: rows[10][i] });
+                            }
+                        }
+                        setPromotions(promoData);
 
-  const categoryList = useMemo(() => {
-    if (!storeData || selectedCategory === '전체') return [];
-    const cats = new Set<string>();
-    storeData.products.forEach(p => {
-      if (p.series.normalize('NFC') === selectedCategory.normalize('NFC') && p.subcategory) {
-        cats.add(p.subcategory.normalize('NFC'));
-      }
-    });
-    return Array.from(cats).sort();
-  }, [storeData, selectedCategory]);
+                        // 제품 데이터 (30행부터)
+                        const productData = rows.slice(29).filter(r => r[2]).map(r => ({
+                            series: r[0],
+                            cat: r[1],
+                            name: r[2],
+                            code: r[3],
+                            priceMsrp: parseInt(r[4]) || 0,
+                            priceOnline: parseInt(r[5]) || 0
+                        }));
+                        setProducts(productData);
+                    });
+            }, []);
 
-  const filteredProducts = useMemo(() => {
-    if (!storeData) return [];
-    
-    const query = searchQuery.trim().toLowerCase().normalize('NFC');
-    
-    return storeData.products.filter(p => {
-      // 검색어가 있는 경우: 카테고리 필터 무시하고 전체에서 검색
-      if (query !== '') {
-        return p.name.toLowerCase().normalize('NFC').includes(query) || 
-               p.code.toLowerCase().normalize('NFC').includes(query);
-      }
-      
-      // 검색어가 없는 경우: 카테고리 필터 적용
-      // 1. 시리즈 필터링 (A열 시리즈와 100% 일치)
-      const matchSeries = selectedCategory === '전체' || p.series.normalize('NFC') === selectedCategory.normalize('NFC');
-      
-      // 2. 카테고리 필터링 (B열 카테고리)
-      const matchCategory = selectedSubcategory === '전체' || p.subcategory.normalize('NFC') === selectedSubcategory.normalize('NFC');
-                          
-      return matchSeries && matchCategory;
-    });
-  }, [storeData, searchQuery, selectedCategory, selectedSubcategory]);
+            // 가격 및 할인율 실시간 계산
+            const totals = useMemo(() => {
+                const baseOnlineTotal = cart.reduce((sum, item) => sum + (item.priceOnline * item.count), 0);
+                const baseMsrpTotal = cart.reduce((sum, item) => sum + (item.priceMsrp * item.count), 0);
+                
+                let finalPrice = baseOnlineTotal;
+                if (selectedPromo === "5000") finalPrice -= 5000;
+                else if (selectedPromo.includes("%")) {
+                    const rate = parseInt(selectedPromo) / 100;
+                    finalPrice = baseOnlineTotal * (1 - rate);
+                }
 
-  const calculationResult: CalculationResult | null = useMemo(() => {
-    if (!storeData || cart.length === 0) return null;
-    return calculateBestPrice(cart, storeData, selectedPromo);
-  }, [cart, storeData, selectedPromo]);
+                const discountFromMsrp = baseMsrpTotal > 0 ? ((1 - finalPrice / baseMsrpTotal) * 100).toFixed(1) : 0;
+                const discountFromOnline = baseOnlineTotal > 0 ? ((1 - finalPrice / baseOnlineTotal) * 100).toFixed(1) : 0;
 
-  const addToCart = (product: Product) => {
-    setCart(prev => {
-      const existing = prev.find(item => item.code === product.code && item.name === product.name);
-      if (existing) {
-        return prev.map(item => 
-          (item.code === product.code && item.name === product.name) ? { ...item, quantity: item.quantity + 1 } : item
-        );
-      }
-      return [...prev, { ...product, id: Math.random().toString(36).substr(2, 9), quantity: 1 }];
-    });
-  };
+                return { finalPrice, baseMsrpTotal, baseOnlineTotal, discountFromMsrp, discountFromOnline };
+            }, [cart, selectedPromo]);
 
-  const updateQuantity = (id: string, delta: number) => {
-    setCart(prev => prev.map(item => {
-      if (item.id === id) {
-        const newQty = Math.max(1, item.quantity + delta);
-        return { ...item, quantity: newQty };
-      }
-      return item;
-    }));
-  };
+            const addToCart = (p) => {
+                const existing = cart.find(item => item.code === p.code);
+                if (existing) {
+                    setCart(cart.map(item => item.code === p.code ? {...item, count: item.count + 1} : item));
+                } else {
+                    setCart([...cart, {...p, count: 1}]);
+                }
+            };
 
-  const removeFromCart = (id: string) => {
-    setCart(prev => prev.filter(item => item.id !== id));
-  };
-
-  const handleSaveQuote = () => {
-    if (!calculationResult) return;
-    if (savedQuotes.length >= 3) {
-      setModalConfig({
-        title: '알림',
-        message: '비교 견적은 최대 3개까지 저장할 수 있습니다.',
-        isAlert: true
-      });
-      return;
-    }
-    const newQuote = {
-      id: Math.random().toString(36).substr(2, 9),
-      totalPrice: calculationResult.finalTotalPrice,
-      timestamp: new Date(),
-      cart: [...cart],
-      selectedPromo: selectedPromo
-    };
-    setSavedQuotes([...savedQuotes, newQuote]);
-  };
-
-  const restoreQuote = (quote: {cart: CartItem[], selectedPromo: string}) => {
-    setCart(quote.cart);
-    setSelectedPromo(quote.selectedPromo);
-  };
-
-  const removeSavedQuote = (id: string) => {
-    setSavedQuotes(prev => prev.filter(q => q.id !== id));
-  };
-
-  const handleDownloadPdf = async () => {
-    if (!calculationResult || cart.length === 0) return;
-    
-    const element = document.getElementById('pdf-template');
-    if (!element) return;
-    
-    // Show the element temporarily
-    element.style.display = 'block';
-    setIsGeneratingPdf(true);
-    
-    try {
-      const canvas = await html2canvas(element, {
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        backgroundColor: '#ffffff'
-      });
-      
-      const imgData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-      
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-      
-      const date = new Date();
-      const dateStr = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
-      pdf.save(`시디즈_견적서_${dateStr}.pdf`);
-    } catch (err) {
-      console.error('PDF generation failed:', err);
-      setModalConfig({
-        title: '오류',
-        message: '견적서 생성에 실패했습니다. 다시 시도해주세요.',
-        isAlert: true
-      });
-    } finally {
-      element.style.display = 'none';
-      setIsGeneratingPdf(false);
-    }
-  };
-
-  const clearCart = () => {
-    setModalConfig({
-      title: '견적함 비우기',
-      message: '견적함을 비우시겠습니까?',
-      onConfirm: () => setCart([])
-    });
-  };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-        <div className="bg-white p-8 rounded-2xl shadow-sm border border-red-100 text-center max-w-md">
-          <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-6">
-            <Info className="w-8 h-8 text-red-500" />
-          </div>
-          <h2 className="text-xl font-bold text-gray-900 mb-3">데이터 로드 실패</h2>
-          <p className="text-gray-600 mb-8 leading-relaxed">{error}</p>
-          <button 
-            onClick={loadData}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-3.5 rounded-xl font-bold text-base transition-all shadow-md active:scale-95"
-          >
-            다시 시도하기
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="h-screen flex flex-row bg-gray-50 font-sans text-gray-900 overflow-hidden">
-      {modalConfig && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            <div className="p-6">
-              <h3 className="text-lg font-bold text-gray-900 mb-2">{modalConfig.title}</h3>
-              <p className="text-gray-600 text-sm leading-relaxed">{modalConfig.message}</p>
-            </div>
-            <div className="bg-gray-50 px-6 py-4 flex justify-end gap-2 border-t border-gray-100">
-              {!modalConfig.isAlert && (
-                <button 
-                  onClick={() => setModalConfig(null)}
-                  className="px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-200 rounded-lg transition-colors"
-                >
-                  취소
-                </button>
-              )}
-              <button 
-                onClick={() => {
-                  if (modalConfig.onConfirm) modalConfig.onConfirm();
-                  setModalConfig(null);
-                }}
-                className="px-4 py-2 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors shadow-sm"
-              >
-                확인
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {isGeneratingPdf && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white p-8 rounded-2xl shadow-xl text-center max-w-xs">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
-            <p className="font-bold text-gray-900">견적서를 생성 중입니다</p>
-            <p className="text-sm text-gray-500 mt-1">잠시만 기다려주세요...</p>
-          </div>
-        </div>
-      )}
-
-      {/* LEFT MAIN AREA (75%) */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden bg-white">
-        {/* Section 1: Fixed Header & Promo */}
-        <header className="flex-shrink-0 z-50 bg-white border-b border-gray-200 shadow-sm relative">
-        <div className="px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-4 overflow-x-auto no-scrollbar">
-            <h1 
-              className="text-xl font-black text-gray-900 flex-shrink-0 mr-2 tracking-tight cursor-pointer hover:opacity-80 transition-opacity"
-              onClick={() => {
-                setSelectedCategory('전체');
-                setSelectedSubcategory('전체');
-                setSearchQuery('');
-              }}
-            >
-              SIDIZ <span className="text-indigo-600">SE</span>
-            </h1>
-          </div>
-          {storeData?.naverLiveDate && (
-            <div className="flex items-center space-x-2 bg-[#03C75A] px-4 py-2 rounded-lg shadow-md flex-shrink-0 ml-4 animate-pulse border-2 border-white/20">
-              <Calendar className="w-5 h-5 text-white" />
-              <div className="flex flex-col">
-                <span className="text-[10px] font-bold text-white/80 leading-none mb-0.5 uppercase">Naver Live</span>
-                <span className="text-sm font-black text-white leading-none">{storeData.naverLiveDate}</span>
-              </div>
-            </div>
-          )}
-        </div>
-        
-        {/* Fixed Promo Details - Collapsible */}
-        {storeData && storeData.events.length > 0 && (
-          <div className="bg-white border-b border-gray-200 shadow-sm z-40 p-3 sm:px-6 lg:px-8">
-            <div className="max-w-[1600px] mx-auto">
-              <button 
-                onClick={() => setIsPromoExpanded(!isPromoExpanded)}
-                className="flex items-center justify-between w-full group"
-              >
-                <div className="flex items-center">
-                  <Info className="w-4 h-4 mr-1.5 text-indigo-600" />
-                  <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider group-hover:text-indigo-600 transition-colors">현재 진행 중인 프로모션 안내</span>
-                  <span className="ml-2 bg-indigo-50 text-indigo-600 text-[10px] px-2 py-0.5 rounded-full font-bold">{storeData.events.length}개 진행중</span>
-                </div>
-                {isPromoExpanded ? (
-                  <ChevronUp className="w-4 h-4 text-gray-400 group-hover:text-indigo-600 transition-colors" />
-                ) : (
-                  <ChevronDown className="w-4 h-4 text-gray-400 group-hover:text-indigo-600 transition-colors" />
-                )}
-              </button>
-              
-              {isPromoExpanded && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 max-h-[140px] overflow-y-auto pr-2 mt-3 pt-3 border-t border-gray-100">
-                  {storeData.events.map((event, idx) => (
-                    <div key={idx} className="bg-gray-50 rounded-lg p-2.5 border border-gray-100">
-                      <div className="font-bold text-xs text-indigo-700 mb-1">{event.name}</div>
-                      <div className="text-[10px] text-gray-600 space-y-1">
-                        {event.details && <div className="leading-relaxed">{event.details}</div>}
-                        {event.exceptions && <div className="text-red-500"><span className="font-semibold">제외:</span> {event.exceptions}</div>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </header>
-
-      {/* Section 2: Products Block */}
-      <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 pb-32 md:pb-8">
-        {/* Hybrid Search Section */}
-        <section className="space-y-4 max-w-[1600px] mx-auto">
-            <div className="relative">
-              <Search className="absolute left-4 top-4 w-6 h-6 text-gray-400" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="제품명 또는 단품코드를 검색하세요 (예: T50, T21HF0VG)"
-                className="w-full pl-12 pr-12 py-4 bg-white border border-gray-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors text-lg font-medium shadow-sm"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-4 top-4 text-gray-400 hover:text-gray-600 p-1 rounded-full hover:bg-gray-100 transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              )}
-            </div>
-            
-            <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
-              <button
-                onClick={() => {
-                  setSelectedCategory('전체');
-                  setSelectedSubcategory('전체');
-                }}
-                className={`flex-shrink-0 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all ${
-                  selectedCategory === '전체'
-                    ? 'bg-gray-900 text-white shadow-md'
-                    : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
-                }`}
-              >
-                전체
-              </button>
-              {seriesList.map(series => (
-                <button
-                  key={series}
-                  onClick={() => {
-                    if (selectedCategory === series) {
-                      setSelectedCategory('전체');
-                    } else {
-                      setSelectedCategory(series);
-                    }
-                    setSelectedSubcategory('전체');
-                  }}
-                  className={`flex-shrink-0 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all ${
-                    selectedCategory === series
-                      ? 'bg-gray-900 text-white shadow-md'
-                      : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  {series}
-                </button>
-              ))}
-            </div>
-
-            {/* Category Chips (B Column) */}
-            {categoryList.length > 0 && (
-              <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar mt-2">
-                <button
-                  onClick={() => setSelectedSubcategory('전체')}
-                  className={`flex-shrink-0 px-4 py-1.5 rounded-full font-medium text-xs transition-all ${
-                    selectedSubcategory === '전체'
-                      ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
-                      : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'
-                  }`}
-                >
-                  전체
-                </button>
-                {categoryList.map(cat => (
-                  <button
-                    key={cat}
-                    onClick={() => setSelectedSubcategory(cat)}
-                    className={`flex-shrink-0 px-4 py-1.5 rounded-full font-medium text-xs transition-all ${
-                      selectedSubcategory === cat
-                        ? 'bg-indigo-100 text-indigo-700 border border-indigo-200'
-                        : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'
-                    }`}
-                  >
-                    {cat}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {/* Product Cards Grid - Optimized Size */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3 mt-4">
-              {filteredProducts.map((product, index) => (
-                <button
-                  key={`${product.code}-${index}`}
-                  onClick={() => addToCart(product)}
-                  className="flex flex-col text-left bg-white border border-gray-200 rounded-xl p-3 hover:border-indigo-500 hover:shadow-md transition-all group"
-                >
-                  <div className="text-[10px] font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded mb-2 w-fit">
-                    {product.series}
-                  </div>
-                  <div className="font-bold text-gray-900 mb-0.5 line-clamp-2 leading-tight text-sm">{product.name}</div>
-                  <div className="text-[10px] text-gray-400 mb-3 font-mono">{product.code}</div>
-                  <div className="mt-auto w-full pt-2 border-t border-gray-100">
-                    <div className="space-y-0.5 mb-2">
-                      <div className="flex justify-between items-center text-[10px]">
-                        <span className="text-gray-400">소비자가</span>
-                        <span className="text-gray-400">{product.retailPrice.toLocaleString()}원</span>
-                      </div>
-                    </div>
-                    <div className="flex items-end justify-between">
-                      <div>
-                        <div className="text-[9px] font-bold text-gray-500 mb-0.5">온라인 행사가</div>
-                        <div className="text-base font-black text-gray-900 leading-none">
-                          {product.onlinePrice.toLocaleString()}원
+            return (
+                <div className="flex flex-col h-screen overflow-hidden">
+                    {/* 섹션 1: 상단 프로모션 고정 영역 */}
+                    <div className="bg-white border-b p-4 flex-shrink-0 z-10 shadow-sm">
+                        <div className="flex justify-between items-center mb-4">
+                            <h1 className="text-2xl font-black text-slate-800">SIDIZ <span className="text-blue-600">SE</span></h1>
+                            <div className="bg-emerald-500 text-white px-4 py-1 rounded-full text-xs font-bold">
+                                🟢 NAVER LIVE : {naverLive}
+                            </div>
                         </div>
-                      </div>
-                      <div className="w-7 h-7 rounded-full bg-gray-50 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-colors text-gray-400">
-                        <Plus className="w-4 h-4" />
-                      </div>
-                    </div>
-                  </div>
-                </button>
-              ))}
-              {filteredProducts.length === 0 && (
-                <div className="col-span-full py-12 text-center text-gray-500 bg-white rounded-2xl border border-gray-200 border-dashed">
-                  검색 결과가 없습니다.
-                </div>
-              )}
-            </div>
-          </section>
-        </main>
-      </div>
-
-      {/* Section 3: Right Pane Dashboard (25%) */}
-      <aside className="hidden md:flex w-[25%] min-w-[320px] max-w-[400px] h-full flex-shrink-0 bg-slate-50 border-l border-gray-200 flex-col shadow-[-4px_0_15px_rgba(0,0,0,0.03)] z-20">
-        <div className="p-4 border-b border-gray-200 bg-white flex items-center justify-between flex-shrink-0 h-14">
-            <h2 className="text-base font-bold text-gray-900 flex items-center">
-              <ShoppingCart className="w-4 h-4 mr-2 text-indigo-600" />
-              견적 대시보드
-            </h2>
-            <div className="flex items-center gap-2">
-              <button 
-                onClick={clearCart}
-                className="text-gray-400 hover:text-red-500 p-1 transition-colors"
-                title="견적함 비우기"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-              <span className="bg-indigo-100 text-indigo-800 text-[10px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap">
-                {cart.length}개
-              </span>
-            </div>
-          </div>
-        
-        <div className="flex-1 overflow-y-auto min-h-0 p-3 space-y-2.5 bg-transparent">
-          {cart.length > 0 ? (
-              <>
-                {calculationResult?.items.map((item) => (
-                  <div key={item.id} className="bg-white border border-gray-200 rounded-lg p-3 shadow-sm relative group">
-                    <div className="flex justify-between items-start mb-1">
-                      <div className="pr-5">
-                        <div className="font-bold text-gray-900 leading-tight text-sm">{item.name}</div>
-                        <div className="text-[10px] text-gray-500 font-mono mt-0.5">{item.code}</div>
-                      </div>
-                      <button onClick={() => removeFromCart(item.id)} className="absolute top-3 right-3 text-gray-300 hover:text-red-500 hover:bg-red-50 p-1 rounded transition-colors shrink-0">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-
-                    <div className="flex items-center justify-between mt-2 mb-2 gap-2">
-                      <div className="flex items-center bg-gray-50 border border-gray-200 rounded-md p-0.5 shrink-0">
-                        <button onClick={() => updateQuantity(item.id, -1)} className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-200 text-gray-600 text-sm">-</button>
-                        <span className="w-6 text-center font-bold text-xs text-gray-900">{item.quantity}</span>
-                        <button onClick={() => updateQuantity(item.id, 1)} className="w-6 h-6 flex items-center justify-center rounded hover:bg-gray-200 text-gray-600 text-sm">+</button>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-[10px] text-gray-400">{(item.retailPrice * item.quantity).toLocaleString()}원</div>
-                        <div className="text-xs font-bold text-gray-900">{(item.onlinePrice * item.quantity).toLocaleString()}원</div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </>
-            ) : (
-              <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-3">
-                <ShoppingCart className="w-10 h-10 text-gray-300" />
-                <div className="text-center">
-                  <p className="font-medium text-gray-900 text-sm">견적함이 비어있습니다</p>
-                </div>
-              </div>
-          )}
-        </div>
-
-        {/* Sidebar Footer (Summary) */}
-        {calculationResult && cart.length > 0 && (
-          <div className="border-t border-gray-200 bg-white p-3 space-y-2 flex-shrink-0">
-              {/* Overall Benefit Selection */}
-              <div className="space-y-1.5">
-                <label className="block text-xs font-bold text-gray-900">전체 혜택 선택</label>
-                <select 
-                  value={selectedPromo}
-                  onChange={(e) => setSelectedPromo(e.target.value)}
-                  className="w-full text-xs border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-gray-50 p-2 outline-none border font-bold text-indigo-700"
-                >
-                  <option value="혜택을 선택하세요">혜택을 선택하세요</option>
-                  <optgroup label="금액대별 쿠폰">
-                    {storeData?.coupons.map(coupon => (
-                      <option key={coupon.name} value={coupon.name}>
-                        [{Math.round(coupon.discountRate * 100)}% 할인]
-                      </option>
-                    ))}
-                  </optgroup>
-                  <optgroup label="기타 프로모션">
-                    {FIXED_PROMO_OPTIONS.map(opt => (
-                      <option key={opt} value={opt}>{opt}</option>
-                    ))}
-                  </optgroup>
-                </select>
-              </div>
-
-              <div className="space-y-1 text-xs">
-                <div className="flex justify-between text-gray-400">
-                  <span>총 소비자가</span>
-                  <span>{calculationResult.totalRetailPrice.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between text-gray-600">
-                  <span>총 온라인가</span>
-                  <span className="font-medium">{calculationResult.totalOnlinePrice.toLocaleString()}</span>
-                </div>
-              </div>
-
-              <div className="pt-2 border-t border-gray-200">
-                <div className="flex justify-between items-end mb-2">
-                  <div className="flex flex-col">
-                    <span className="text-xs font-bold text-gray-900 mb-1">최종 견적 합계</span>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded w-fit">
-                        소비자가 대비 -{calculationResult.retailDiscountRate.toFixed(1)}%
-                      </span>
-                      <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded w-fit">
-                        온라인가 대비 -{calculationResult.onlineDiscountRate.toFixed(1)}%
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-xl font-black text-indigo-600 tracking-tight">
-                    {calculationResult.finalTotalPrice.toLocaleString()}
-                  </div>
-                </div>
-
-                <div className="flex gap-2">
-                  <button 
-                    onClick={handleSaveQuote}
-                    disabled={savedQuotes.length >= 3}
-                    className="flex-1 bg-white border border-indigo-200 text-indigo-700 hover:bg-indigo-50 py-2 rounded-lg font-bold text-xs transition-colors disabled:opacity-50 shadow-sm"
-                  >
-                    기억하기
-                  </button>
-                  <button onClick={handleDownloadPdf} className="flex-[2] bg-gray-900 hover:bg-black text-white py-2 rounded-lg font-bold text-sm shadow-md transition-all active:scale-95">
-                    견적서 저장
-                  </button>
-                </div>
-
-                {savedQuotes.length > 0 && (
-                  <div className="mt-3 flex gap-1.5 overflow-x-auto no-scrollbar">
-                    {savedQuotes.map((quote, idx) => (
-                      <button 
-                        key={quote.id} 
-                        onClick={() => restoreQuote(quote)}
-                        className="relative flex-shrink-0 bg-gray-100 border border-gray-200 p-1.5 rounded-md text-[10px] font-bold text-gray-700 min-w-[80px] hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-700 transition-colors text-left group"
-                      >
-                        <div 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            removeSavedQuote(quote.id);
-                          }} 
-                          className="absolute -top-1 -right-1 bg-white rounded-full shadow-sm text-gray-400 hover:text-red-500 cursor-pointer"
-                        >
-                          <X className="w-3 h-3" />
+                        <div className="flex gap-3 overflow-x-auto pb-1 scroll-hide">
+                            {promotions.map((p, i) => (
+                                <div key={i} className="min-w-[200px] bg-slate-50 p-3 rounded-xl border border-slate-100 flex-shrink-0">
+                                    <div className="font-bold text-blue-700 text-xs mb-1">{p.title}</div>
+                                    <div className="text-[11px] text-slate-500 leading-tight">{p.content}</div>
+                                </div>
+                            ))}
                         </div>
-                        #{idx + 1}: {Math.round(quote.totalPrice / 10000)}만
-                      </button>
-                    ))}
-                  </div>
-              )}
-            </div>
-          </div>
-        )}
-      </aside>
-
-      {/* Mobile Bottom Bar */}
-        <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-[0_-4px_15px_rgba(0,0,0,0.05)] z-30 px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <div className="w-12 h-12 bg-indigo-50 rounded-full flex items-center justify-center text-indigo-600">
-                <ShoppingCart className="w-6 h-6" />
-              </div>
-              {cart.length > 0 && (
-                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold w-5 h-5 flex items-center justify-center rounded-full border-2 border-white">
-                  {cart.length}
-                </span>
-              )}
-            </div>
-            <div>
-              <div className="text-xs text-gray-500 font-medium">총 견적 금액</div>
-              <div className="text-lg font-black text-indigo-600 leading-tight">
-                {calculationResult ? calculationResult.finalTotalPrice.toLocaleString() : 0}
-              </div>
-            </div>
-          </div>
-          <button 
-            onClick={() => setIsMobileCartOpen(true)}
-            className="bg-gray-900 text-white px-6 py-3 rounded-xl font-bold text-sm shadow-md active:scale-95 transition-transform"
-          >
-            견적 확인
-          </button>
-        </div>
-
-        {/* Mobile Cart Drawer */}
-        {isMobileCartOpen && (
-          <div className="md:hidden fixed inset-0 h-[100dvh] z-50 flex flex-col bg-gray-50/95 backdrop-blur-sm animate-in slide-in-from-bottom-full duration-300">
-            <div className="bg-white px-4 py-4 border-b border-gray-200 flex items-center justify-between flex-shrink-0">
-              <h2 className="text-lg font-bold text-gray-900 flex items-center">
-                <ShoppingCart className="w-5 h-5 mr-2 text-indigo-600" />
-                견적 대시보드
-                <span className="ml-2 bg-indigo-100 text-indigo-800 text-xs font-bold px-2 py-0.5 rounded-full">
-                  {cart.length}
-                </span>
-              </h2>
-              <div className="flex items-center gap-2">
-                <button 
-                  onClick={clearCart}
-                  className="p-2 text-gray-400 hover:text-red-500"
-                >
-                  <Trash2 className="w-5 h-5" />
-                </button>
-                <button 
-                  onClick={() => setIsMobileCartOpen(false)}
-                  className="p-2 bg-gray-100 rounded-full text-gray-500 hover:text-gray-900"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto min-h-0 p-4 space-y-3">
-              {cart.length > 0 ? (
-                <>
-                  {calculationResult?.items.map((item) => (
-                    <div key={item.id} className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm relative group">
-                      <div className="flex justify-between items-start mb-2">
-                        <div className="pr-6">
-                          <div className="font-bold text-gray-900 leading-tight">{item.name}</div>
-                          <div className="text-xs text-gray-500 font-mono mt-0.5">{item.code}</div>
-                        </div>
-                        <button onClick={() => removeFromCart(item.id)} className="absolute top-4 right-4 text-gray-300 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition-colors shrink-0">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <div className="flex items-center justify-between mt-4 mb-3 gap-2">
-                        <div className="flex items-center bg-gray-50 border border-gray-200 rounded-lg p-0.5 shrink-0">
-                          <button onClick={() => updateQuantity(item.id, -1)} className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-200 text-gray-600">-</button>
-                          <span className="w-8 text-center font-bold text-sm text-gray-900">{item.quantity}</span>
-                          <button onClick={() => updateQuantity(item.id, 1)} className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-200 text-gray-600">+</button>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-xs text-gray-400">{(item.retailPrice * item.quantity).toLocaleString()}원</div>
-                          <div className="text-sm font-bold text-gray-900">{(item.onlinePrice * item.quantity).toLocaleString()}원</div>
-                        </div>
-                      </div>
                     </div>
-                  ))}
 
-                  {/* Overall Benefit Selection (Mobile) */}
-                  <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
-                    <label className="block text-sm font-bold text-gray-900 mb-2">전체 혜택 선택</label>
-                    <select 
-                      value={selectedPromo}
-                      onChange={(e) => setSelectedPromo(e.target.value)}
-                      className="w-full text-sm border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-gray-50 p-3 outline-none border font-bold text-indigo-700"
-                    >
-                      <option value="혜택을 선택하세요">혜택을 선택하세요</option>
-                      <optgroup label="금액대별 쿠폰">
-                        {storeData?.coupons.map(coupon => (
-                          <option key={coupon.name} value={coupon.name}>
-                            [{Math.round(coupon.discountRate * 100)}% 할인]
-                          </option>
-                        ))}
-                      </optgroup>
-                      <optgroup label="기타 프로모션">
-                        {FIXED_PROMO_OPTIONS.map(opt => (
-                          <option key={opt} value={opt}>{opt}</option>
-                        ))}
-                      </optgroup>
-                    </select>
-                  </div>
+                    <div className="flex flex-1 overflow-hidden">
+                        {/* 섹션 2: 좌측 제품 탐색 영역 */}
+                        <div className="flex-1 flex flex-col p-4 overflow-hidden">
+                            <input 
+                                type="text" 
+                                placeholder="제품명 또는 단품코드를 검색하세요" 
+                                className="w-full p-4 border-2 border-slate-100 rounded-2xl mb-4 focus:border-blue-500 outline-none transition-all shadow-inner bg-white"
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                            />
+                            <div className="flex gap-2 mb-4 overflow-x-auto scroll-hide">
+                                {["전체", "게이밍", "워크", "스터디", "리빙"].map(cat => (
+                                    <button 
+                                        key={cat}
+                                        onClick={() => setCategory(cat)}
+                                        className={`px-5 py-2 rounded-full text-xs font-bold transition-all ${category === cat ? 'bg-slate-800 text-white' : 'bg-white border text-slate-400'}`}
+                                    >
+                                        {cat}
+                                    </button>
+                                ))}
+                            </div>
+                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 overflow-y-auto pr-2 pb-10">
+                                {products
+                                    .filter(p => (category === "전체" || p.series.includes(category) || p.cat.includes(category)))
+                                    .filter(p => p.name.includes(searchTerm) || p.code.includes(searchTerm))
+                                    .map((p, i) => (
+                                    <div key={i} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-blue-400 transition-all cursor-pointer group" onClick={() => addToCart(p)}>
+                                        <div className="text-[10px] text-slate-300 font-bold mb-1 uppercase tracking-wider">{p.cat}</div>
+                                        <div className="font-bold text-slate-700 text-sm mb-3 truncate group-hover:text-blue-600">{p.name}</div>
+                                        <div className="text-[11px] text-slate-300 mb-1">소비자가 {p.priceMsrp.toLocaleString()}</div>
+                                        <div className="font-extrabold text-slate-800">온라인 {p.priceOnline.toLocaleString()}원</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
 
-                  {/* Save Quote Button & List */}
-                  <div className="mt-4">
-                    <button 
-                      onClick={handleSaveQuote}
-                      disabled={savedQuotes.length >= 3}
-                      className="w-full bg-white border border-indigo-200 text-indigo-700 hover:bg-indigo-50 py-3 rounded-xl font-bold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
-                    >
-                      현재 견적 기억하기 (최대 3개)
-                    </button>
+                        {/* 섹션 3: 우측 견적 대시보드 (위아래로 긴 패널) */}
+                        <div className="w-80 bg-slate-50 border-l border-slate-200 flex flex-col shadow-2xl z-20">
+                            <div className="p-5 border-b bg-white flex justify-between items-center">
+                                <h2 className="font-black text-slate-800">🛒 견적함</h2>
+                                <span className="bg-blue-100 text-blue-600 text-[10px] px-2 py-0.5 rounded-full font-bold">{cart.length} ITEMS</span>
+                            </div>
+                            
+                            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                                {cart.map(item => (
+                                    <div key={item.code} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 relative group">
+                                        <button onClick={() => setCart(cart.filter(c => c.code !== item.code))} className="absolute top-2 right-2 text-slate-200 hover:text-red-400">✕</button>
+                                        <div className="font-bold text-slate-700 text-xs mb-2 pr-4">{item.name}</div>
+                                        <div className="flex justify-between items-center">
+                                            <span className="text-xs font-bold text-slate-400">{item.priceOnline.toLocaleString()}원</span>
+                                            <div className="flex items-center bg-slate-100 rounded-lg px-2">
+                                                <button onClick={() => {
+                                                    if(item.count > 1) setCart(cart.map(c => c.code === item.code ? {...c, count: c.count - 1} : c));
+                                                }} className="p-1 text-slate-400">-</button>
+                                                <span className="px-3 text-xs font-bold">{item.count}</span>
+                                                <button onClick={() => addToCart(item)} className="p-1 text-slate-400">+</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                                {cart.length === 0 && (
+                                    <div className="h-full flex flex-col items-center justify-center opacity-20 mt-20">
+                                        <span className="text-4xl mb-2">🪑</span>
+                                        <p className="text-xs font-bold">제품을 담아주세요</p>
+                                    </div>
+                                )}
+                            </div>
 
-                    {savedQuotes.length > 0 && (
-                      <div className="mt-3 space-y-2">
-                        {savedQuotes.map((quote, idx) => {
-                          const colors = ['bg-blue-50 border-blue-200 text-blue-900 hover:bg-blue-100', 'bg-purple-50 border-purple-200 text-purple-900 hover:bg-purple-100', 'bg-orange-50 border-orange-200 text-orange-900 hover:bg-orange-100'];
-                          const colorClass = colors[idx % colors.length];
-                          return (
-                            <button 
-                              key={quote.id} 
-                              onClick={() => restoreQuote(quote)}
-                              className={`w-full text-left relative p-3 rounded-xl border shadow-sm transition-colors ${colorClass}`}
-                            >
-                              <div 
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  removeSavedQuote(quote.id);
-                                }} 
-                                className="absolute top-3 right-3 text-gray-400 hover:text-red-500 cursor-pointer"
-                              >
-                                <X className="w-4 h-4" />
-                              </div>
-                              <div className="font-black text-base pr-6">견적 {idx + 1}: {quote.totalPrice.toLocaleString()}원</div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-3 py-20">
-                  <ShoppingCart className="w-12 h-12 text-gray-300" />
-                  <div className="text-center">
-                    <p className="font-medium text-gray-900">견적함이 비어있습니다</p>
-                    <p className="text-sm mt-1">제품을 선택하여 추가해주세요</p>
-                  </div>
-                </div>
-              )}
-            </div>
+                            <div className="p-5 bg-white border-t border-slate-200 space-y-4">
+                                <div className="space-y-1">
+                                    <p className="text-[10px] font-bold text-slate-400 ml-1">최종 혜택 선택</p>
+                                    <select 
+                                        className="w-full p-3 bg-slate-50 border-none rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"
+                                        value={selectedPromo}
+                                        onChange={(e) => setSelectedPromo(e.target.value)}
+                                    >
+                                        <option value="none">적용할 혜택을 선택하세요</option>
+                                        <option value="5000">신규 회원 할인 (-5,000원)</option>
+                                        <option value="3%">단품 구매 할인 (3%)</option>
+                                        <option value="5%">세트/2개 이상 할인 (5%)</option>
+                                        <option value="7%">쿠폰 3단계 할인 (7%)</option>
+                                        <option value="10%">쿠폰 4단계 할인 (10%)</option>
+                                        <option value="15%">쿠폰 6단계 할인 (15%)</option>
+                                    </select>
+                                </div>
 
-            {calculationResult && cart.length > 0 && (
-              <div className="bg-white border-t border-gray-200 p-3 pb-6 shadow-[0_-10px_20px_rgba(0,0,0,0.05)] flex-shrink-0">
-                <div className="flex justify-between items-end mb-3">
-                  <div className="flex flex-col">
-                    <span className="text-sm font-bold text-gray-900 mb-1">최종 견적 합계</span>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded w-fit">소비자가 대비 -{calculationResult.retailDiscountRate.toFixed(1)}%</span>
-                      <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded w-fit">온라인가 대비 -{calculationResult.onlineDiscountRate.toFixed(1)}%</span>
+                                <div className="pt-2 space-y-1 text-right border-t border-dashed">
+                                    <div className="text-[10px] text-slate-300">정상가 {totals.baseMsrpTotal.toLocaleString()}원</div>
+                                    <div className="text-2xl font-black text-blue-600 tracking-tighter">
+                                        {totals.finalPrice.toLocaleString()}원
+                                    </div>
+                                    <div className="flex justify-end gap-2 text-[10px] font-black uppercase">
+                                        <span className="text-purple-400">정상가 대비 {totals.discountFromMsrp}% 할인</span>
+                                        <span className="text-emerald-400">온라인 대비 {totals.discountFromOnline}% 추가혜택</span>
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-2 pt-2">
+                                    <button onClick={() => {
+                                        if(cart.length > 0) {
+                                            const newQuote = { id: Date.now(), cart: [...cart], promo: selectedPromo, total: totals.finalPrice };
+                                            setSavedQuotes([newQuote, ...savedQuotes].slice(0, 3));
+                                        }
+                                    }} className="flex-1 py-3 bg-slate-100 text-slate-500 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all">기억하기</button>
+                                    <button onClick={() => window.print()} className="flex-[2] py-3 bg-blue-600 text-white rounded-xl text-xs font-black shadow-lg shadow-blue-100 hover:bg-blue-700 transition-all">견적서 저장</button>
+                                </div>
+                                
+                                <div className="flex gap-1 overflow-x-auto scroll-hide">
+                                    {savedQuotes.map((q, i) => (
+                                        <button key={q.id} onClick={() => { if(confirm("이전 견적을 불러올까요?")) { setCart(q.cart); setSelectedPromo(q.promo); } }} className="flex-shrink-0 bg-blue-50 text-[9px] px-2 py-1 rounded-md border border-blue-100 font-bold text-blue-400">
+                                            #{savedQuotes.length-i} ({q.total.toLocaleString()})
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                  </div>
-                  <div className="text-2xl font-black text-indigo-600 tracking-tight">
-                    {calculationResult.finalTotalPrice.toLocaleString()}
-                  </div>
                 </div>
+            );
+        }
 
-                <button onClick={handleDownloadPdf} className="w-full bg-gray-900 hover:bg-black text-white py-3 rounded-xl font-bold text-base shadow-md transition-all active:scale-95">
-                  견적서 저장
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-      {/* Hidden PDF Template */}
-      <div id="pdf-template" style={{ display: 'none', width: '800px', padding: '40px', backgroundColor: 'white', color: 'black', fontFamily: 'sans-serif' }}>
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #111', paddingBottom: '20px', marginBottom: '30px' }}>
-          <div style={{ fontSize: '32px', fontWeight: '900', letterSpacing: '-1px', color: '#000000' }}>SIDIZ</div>
-          <div style={{ textAlign: 'right' }}>
-            <h1 style={{ fontSize: '24px', fontWeight: 'bold', margin: 0, color: '#111' }}>SIDIZ 견적서</h1>
-            <p style={{ fontSize: '14px', color: '#666', marginTop: '5px', marginBottom: 0 }}>발행일자: {new Date().toLocaleDateString()}</p>
-          </div>
-        </div>
-
-        {/* Body */}
-        <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '40px' }}>
-          <thead>
-            <tr style={{ backgroundColor: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-              <th style={{ padding: '12px', textAlign: 'left', fontSize: '14px', fontWeight: 'bold', color: '#374151' }}>제품명</th>
-              <th style={{ padding: '12px', textAlign: 'center', fontSize: '14px', fontWeight: 'bold', color: '#374151' }}>수량</th>
-              <th style={{ padding: '12px', textAlign: 'right', fontSize: '14px', fontWeight: 'bold', color: '#374151' }}>온라인가</th>
-            </tr>
-          </thead>
-          <tbody>
-            {calculationResult?.items.map((item, index) => (
-              <tr key={index} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                <td style={{ padding: '12px', fontSize: '14px' }}>
-                  <div style={{ fontWeight: 'bold', color: '#111' }}>{item.name}</div>
-                  <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>{item.code}</div>
-                </td>
-                <td style={{ padding: '12px', textAlign: 'center', fontSize: '14px', color: '#374151' }}>{item.quantity}</td>
-                <td style={{ padding: '12px', textAlign: 'right', fontSize: '14px', fontWeight: 'bold', color: '#111' }}>
-                  {(item.onlinePrice * item.quantity).toLocaleString()}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-
-        {/* Footer */}
-        <div style={{ backgroundColor: '#f9fafb', padding: '24px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '16px' }}>
-            <div>
-              <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#374151', display: 'block' }}>최종 결제 예정 금액</span>
-              <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
-                <div style={{ backgroundColor: '#eef2ff', color: '#4338ca', padding: '4px 10px', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold', border: '1px solid #c7d2fe' }}>
-                  소비자가 대비 {calculationResult?.retailDiscountRate.toFixed(1)}% 할인
-                </div>
-                <div style={{ backgroundColor: '#ecfdf5', color: '#047857', padding: '4px 10px', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold', border: '1px solid #a7f3d0' }}>
-                  온라인가 대비 {calculationResult?.onlineDiscountRate.toFixed(1)}% 추가 혜택
-                </div>
-              </div>
-            </div>
-            <span style={{ fontSize: '32px', fontWeight: '900', color: '#4f46e5' }}>
-              {calculationResult?.finalTotalPrice.toLocaleString()}원
-            </span>
-          </div>
-          <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: '16px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ display: 'inline-block', backgroundColor: '#4f46e5', color: 'white', fontSize: '12px', fontWeight: 'bold', padding: '4px 8px', borderRadius: '4px' }}>
-                적용 혜택: {calculationResult?.appliedDiscountName}
-              </span>
-              <div style={{ textAlign: 'right', fontSize: '12px', color: '#666' }}>
-                <div>총 소비자가: {calculationResult?.totalRetailPrice.toLocaleString()}원</div>
-                <div style={{ marginBottom: '4px' }}>총 온라인가: {calculationResult?.totalOnlinePrice.toLocaleString()}원</div>
-                <div style={{ fontWeight: 'bold', color: '#4f46e5' }}>최종 혜택가: {calculationResult?.finalTotalPrice.toLocaleString()}원</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
