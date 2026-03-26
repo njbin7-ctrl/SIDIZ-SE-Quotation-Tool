@@ -8,14 +8,11 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Noto Sans KR', sans-serif; height: 100vh; overflow: hidden; }
+        body { font-family: 'Noto Sans KR', sans-serif; height: 100dvh; overflow: hidden; background-color: #f8fafc; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
-        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        @media print { .no-print { display: none; } }
     </style>
 </head>
 <body>
@@ -24,265 +21,182 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
 
-        // 구글 시트 데이터 주소 (CSV 추출 모드)
-        const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1af5u1NNvYs_ygLw3CnfWiZrp_IkvLcmUs1edO52p1kU/gviz/tq?tqx=out:csv&gid=1647057314";
+        // 구글 시트 주소 (CSV 내보내기 형식)
+        const SHEET_ID = "1af5u1NNvYs_ygLw3CnfWiZrp_IkvLcmUs1edO52p1kU";
+        const GID = "1647057314";
+        const CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GID}`;
 
         function App() {
-            const [storeData, setStoreData] = useState(null);
+            const [data, setData] = useState({ products: [], events: [], naverLive: "", coupons: [] });
             const [cart, setCart] = useState([]);
-            const [searchQuery, setSearchQuery] = useState('');
-            const [selectedCategory, setSelectedCategory] = useState('전체');
-            const [selectedSubcategory, setSelectedSubcategory] = useState('전체');
-            const [selectedPromo, setSelectedPromo] = useState('혜택을 선택하세요');
-            const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
-            const [loading, setLoading] = useState(true);
-            const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
-            const [error, setError] = useState(null);
+            const [selectedPromo, setSelectedPromo] = useState("혜택을 선택하세요");
+            const [search, setSearch] = useState("");
+            const [category, setCategory] = useState("전체");
+            const [status, setStatus] = useState({ loading: true, error: null });
             const [savedQuotes, setSavedQuotes] = useState([]);
-            const [isPromoExpanded, setIsPromoExpanded] = useState(false);
-            const [modalConfig, setModalConfig] = useState(null);
 
-            // 데이터 불러오기 및 파싱
+            // CSV 파싱 함수 (쉼표 포함 데이터 처리)
+            const parseCSV = (text) => {
+                const regex = /(".*?"|[^",\s]+)(?=\s*,|\s*$)/g;
+                return text.split('\n').map(line => {
+                    const matches = line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g);
+                    return matches ? matches.map(m => m.replace(/^"|"$/g, '').trim()) : [];
+                });
+            };
+
             useEffect(() => {
-                const loadData = async () => {
+                const loadSheet = async () => {
                     try {
-                        const response = await fetch(SHEET_CSV_URL);
-                        const csvText = await response.text();
-                        const rows = csvText.split('\n').map(row => 
-                            row.split(',').map(cell => cell.replace(/^"(.*)"$/, '$1'))
-                        );
+                        const res = await fetch(CSV_URL);
+                        if (!res.ok) throw new Error("시트 데이터를 가져올 수 없습니다. 공유 설정을 확인해주세요.");
+                        const text = await res.text();
+                        const rows = parseCSV(text);
 
-                        const data = {
-                            naverLiveDate: rows[4] ? rows[4][1] : "",
-                            events: [
-                                { name: rows[9][1], details: rows[11][1] },
-                                { name: rows[9][2], details: rows[11][2] },
-                                { name: rows[9][3], details: rows[11][3] },
-                                { name: rows[9][4], details: rows[11][4] }
-                            ].filter(e => e.name),
-                            coupons: rows.slice(16, 17)[0].slice(1, 7).map((rate, i) => ({
-                                name: `쿠폰 ${i+1}단계`,
-                                discountRate: parseFloat(rate.replace('%', '')) / 100
-                            })).filter(c => !isNaN(c.discountRate)),
-                            products: rows.slice(29).filter(r => r[2]).map(r => ({
-                                series: r[0],
-                                subcategory: r[1],
-                                name: r[2],
-                                code: r[3],
-                                retailPrice: parseInt(r[4]) || 0,
-                                onlinePrice: parseInt(r[5]) || 0
-                            }))
-                        };
-                        setStoreData(data);
-                        setLoading(false);
+                        // 데이터 매핑 (사용자 시트 좌표 기준)
+                        const naverLive = rows[4]?.[1] || "일정 확인 중";
+                        const events = [
+                            { name: rows[9]?.[1], desc: rows[11]?.[1] },
+                            { name: rows[9]?.[2], desc: rows[11]?.[2] },
+                            { name: rows[9]?.[3], desc: rows[11]?.[3] },
+                            { name: rows[9]?.[4], desc: rows[11]?.[4] }
+                        ].filter(e => e.name);
+
+                        const products = rows.slice(29).filter(r => r[2]).map(r => ({
+                            series: r[0], sub: r[1], name: r[2], code: r[3],
+                            retail: parseInt(r[4]?.replace(/,/g, '')) || 0,
+                            online: parseInt(r[5]?.replace(/,/g, '')) || 0
+                        }));
+
+                        setData({ products, events, naverLive });
+                        setStatus({ loading: false, error: null });
                     } catch (err) {
-                        setError("데이터를 불러오지 못했습니다. 시트 권한을 확인해주세요.");
-                        setLoading(false);
+                        setStatus({ loading: false, error: err.message });
                     }
                 };
-                loadData();
+                loadSheet();
             }, []);
 
-            // 필터링 및 계산 로직 (기존 코드 로직 이식)
-            const seriesList = useMemo(() => {
-                if (!storeData) return [];
-                const series = new Set();
-                storeData.products.forEach(p => series.add(p.series));
-                return Array.from(series);
-            }, [storeData]);
+            // 계산 로직
+            const calculation = useMemo(() => {
+                const totalRetail = cart.reduce((acc, cur) => acc + (cur.retail * cur.count), 0);
+                const totalOnline = cart.reduce((acc, cur) => acc + (cur.online * cur.count), 0);
+                let finalPrice = totalOnline;
 
-            const categoryList = useMemo(() => {
-                if (!storeData || selectedCategory === '전체') return [];
-                const cats = new Set();
-                storeData.products.forEach(p => {
-                    if (p.series === selectedCategory) cats.add(p.subcategory);
-                });
-                return Array.from(cats);
-            }, [storeData, selectedCategory]);
-
-            const filteredProducts = useMemo(() => {
-                if (!storeData) return [];
-                const query = searchQuery.toLowerCase();
-                return storeData.products.filter(p => {
-                    if (query) return p.name.toLowerCase().includes(query) || p.code.toLowerCase().includes(query);
-                    const matchS = selectedCategory === '전체' || p.series === selectedCategory;
-                    const matchC = selectedSubcategory === '전체' || p.subcategory === selectedSubcategory;
-                    return matchS && matchC;
-                });
-            }, [storeData, searchQuery, selectedCategory, selectedSubcategory]);
-
-            const calculationResult = useMemo(() => {
-                if (!storeData || cart.length === 0) return null;
-                const totalRetail = cart.reduce((s, i) => s + (i.retailPrice * i.quantity), 0);
-                const totalOnline = cart.reduce((s, i) => s + (i.onlinePrice * i.quantity), 0);
-                
-                let finalTotal = totalOnline;
-                let appliedPromo = selectedPromo;
-
-                if (selectedPromo === "신규 회원 할인 (-5,000원)") finalTotal -= 5000;
-                else if (selectedPromo.includes("할인")) {
-                    const rateStr = selectedPromo.match(/\d+/);
-                    if (rateStr) finalTotal = totalOnline * (1 - parseInt(rateStr[0]) / 100);
-                } else if (selectedPromo.includes("쿠폰")) {
-                    const coupon = storeData.coupons.find(c => selectedPromo.includes(c.name));
-                    if (coupon) finalTotal = totalOnline * (1 - coupon.discountRate);
+                if (selectedPromo === "신규 회원 할인 (-5,000원)") finalPrice -= 5000;
+                else if (selectedPromo.includes("%")) {
+                    const rate = parseInt(selectedPromo.match(/\d+/)) / 100;
+                    finalPrice = totalOnline * (1 - rate);
                 }
 
                 return {
-                    items: cart,
-                    totalRetailPrice: totalRetail,
-                    totalOnlinePrice: totalOnline,
-                    finalTotalPrice: finalTotal,
-                    retailDiscountRate: ((1 - finalTotal / totalRetail) * 100),
-                    onlineDiscountRate: ((1 - finalTotal / totalOnline) * 100),
-                    appliedDiscountName: appliedPromo
+                    totalRetail, totalOnline, finalPrice,
+                    offRetail: totalRetail > 0 ? ((1 - finalPrice / totalRetail) * 100).toFixed(1) : 0,
+                    offOnline: totalOnline > 0 ? ((1 - finalPrice / totalOnline) * 100).toFixed(1) : 0
                 };
-            }, [cart, storeData, selectedPromo]);
+            }, [cart, selectedPromo]);
 
-            // 핸들러 함수들
             const addToCart = (p) => {
                 setCart(prev => {
                     const ext = prev.find(i => i.code === p.code);
-                    if (ext) return prev.map(i => i.code === p.code ? {...i, quantity: i.quantity + 1} : i);
-                    return [...prev, {...p, id: Math.random().toString(36).substr(2, 9), quantity: 1}];
+                    if (ext) return prev.map(i => i.code === p.code ? {...i, count: i.count + 1} : i);
+                    return [...prev, { ...p, count: 1 }];
                 });
             };
 
-            const handleDownloadPdf = async () => {
-                const element = document.getElementById('pdf-template');
-                element.style.display = 'block';
-                setIsGeneratingPdf(true);
-                const canvas = await html2canvas(element, { scale: 2 });
-                const imgData = canvas.toDataURL('image/png');
-                const pdf = new jspdf.jsPDF('p', 'mm', 'a4');
-                pdf.addImage(imgData, 'PNG', 0, 0, 210, (canvas.height * 210) / canvas.width);
-                pdf.save(`시디즈_견적서_${new Date().toISOString().slice(0,10)}.pdf`);
-                element.style.display = 'none';
-                setIsGeneratingPdf(false);
-            };
-
-            if (loading) return <div className="h-screen flex items-center justify-center font-bold text-indigo-600 animate-pulse">SIDIZ SE 데이터 로딩 중...</div>;
+            if (status.loading) return <div className="h-screen flex items-center justify-center font-bold text-blue-600">데이터를 실시간으로 불러오고 있습니다...</div>;
+            if (status.error) return <div className="h-screen flex flex-col items-center justify-center p-10 text-center"><p className="text-red-500 font-bold mb-4">에러: {status.error}</p><p className="text-sm text-gray-500">구글 시트의 [공유] 설정이 "링크가 있는 모든 사용자"로 되어 있는지 확인해주세요.</p></div>;
 
             return (
-                <div className="h-screen flex flex-row bg-gray-50 font-sans text-gray-900 overflow-hidden">
-                    {/* 메인 로직 UI 시작 (AI 스튜디오에서 제공한 디자인) */}
-                    <div className="flex-1 flex flex-col h-full overflow-hidden bg-white">
-                        <header className="flex-shrink-0 z-50 bg-white border-b p-4 shadow-sm">
-                            <div className="flex justify-between items-center max-w-[1600px] mx-auto">
-                                <h1 className="text-xl font-black cursor-pointer" onClick={() => window.location.reload()}>SIDIZ <span className="text-indigo-600">SE</span></h1>
-                                <div className="bg-[#03C75A] text-white px-4 py-1.5 rounded-lg text-sm font-bold shadow-sm flex items-center gap-2">
-                                    <span className="text-[10px] opacity-80 uppercase">Naver Live</span> {storeData.naverLiveDate}
-                                </div>
-                            </div>
-                            <div className="mt-3 max-w-[1600px] mx-auto">
-                                <button onClick={() => setIsPromoExpanded(!isPromoExpanded)} className="flex items-center text-[11px] font-bold text-gray-400 gap-1 uppercase tracking-wider">
-                                    <i data-lucide="info" className="w-3 h-3"></i> 현재 진행 중인 프로모션 안내 ({storeData.events.length})
-                                </button>
-                                {isPromoExpanded && (
-                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2 animate-in fade-in slide-in-from-top-1">
-                                        {storeData.events.map((ev, i) => (
-                                            <div key={i} className="bg-gray-50 p-2 rounded border border-gray-100">
-                                                <div className="text-[10px] font-bold text-indigo-600">{ev.name}</div>
-                                                <div className="text-[9px] text-gray-500 line-clamp-2">{ev.details}</div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                        </header>
-
-                        <main className="flex-1 overflow-y-auto p-4 lg:p-8">
-                            <div className="max-w-[1600px] mx-auto space-y-6">
-                                <div className="relative">
-                                    <input 
-                                        type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-                                        placeholder="제품명 또는 코드를 검색하세요..."
-                                        className="w-full p-4 pl-12 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-indigo-500 shadow-inner"
-                                    />
-                                    <div className="absolute left-4 top-4 text-gray-400"><i data-lucide="search"></i></div>
-                                </div>
-
-                                <div className="flex gap-2 overflow-x-auto no-scrollbar">
-                                    {['전체', ...seriesList].map(s => (
-                                        <button key={s} onClick={() => {setSelectedCategory(s); setSelectedSubcategory('전체');}}
-                                            className={`px-5 py-2 rounded-xl text-sm font-bold whitespace-nowrap transition-all ${selectedCategory === s ? 'bg-gray-900 text-white shadow-lg' : 'bg-white border text-gray-500'}`}>
-                                            {s}
-                                        </button>
-                                    ))}
-                                </div>
-
-                                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                                    {filteredProducts.map((p, i) => (
-                                        <div key={i} onClick={() => addToCart(p)} className="bg-white border rounded-2xl p-4 hover:border-indigo-500 hover:shadow-xl transition-all cursor-pointer group flex flex-col h-full">
-                                            <div className="text-[9px] font-black text-indigo-400 mb-1 uppercase tracking-tighter">{p.series} | {p.subcategory}</div>
-                                            <div className="font-bold text-sm text-gray-800 mb-1 line-clamp-1">{p.name}</div>
-                                            <div className="text-[10px] text-gray-300 font-mono mb-4">{p.code}</div>
-                                            <div className="mt-auto pt-3 border-t border-gray-50 flex justify-between items-end">
-                                                <div>
-                                                    <div className="text-[9px] text-gray-300">소비자가 {p.retailPrice.toLocaleString()}</div>
-                                                    <div className="text-base font-black text-gray-900 leading-none">{p.onlinePrice.toLocaleString()}원</div>
-                                                </div>
-                                                <div className="w-8 h-8 rounded-full bg-gray-50 group-hover:bg-indigo-600 group-hover:text-white flex items-center justify-center transition-colors"><i data-lucide="plus" className="w-4 h-4"></i></div>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        </main>
-                    </div>
-
-                    {/* 섹션 3: 견적 대시보드 */}
-                    <aside className="w-[320px] bg-slate-50 border-l border-gray-200 flex flex-col shadow-2xl z-20">
-                        <div className="p-5 border-b bg-white flex justify-between items-center">
-                            <h2 className="font-bold text-gray-900 flex items-center gap-2"><i data-lucide="shopping-cart" className="w-4 h-4 text-indigo-600"></i> 견적함</h2>
-                            <span className="bg-indigo-100 text-indigo-600 text-[10px] px-2 py-0.5 rounded-full font-bold">{cart.length}개</span>
+                <div className="flex flex-col h-screen overflow-hidden">
+                    {/* 상단 프로모션 영역 */}
+                    <header className="bg-white border-b p-4 no-print flex-shrink-0">
+                        <div className="flex justify-between items-center mb-4">
+                            <h1 className="text-xl font-black text-slate-800 tracking-tighter">SIDIZ <span className="text-blue-600">SE</span></h1>
+                            <div className="bg-green-500 text-white px-3 py-1 rounded-lg text-xs font-bold">LIVE: {data.naverLive}</div>
                         </div>
-                        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                            {cart.map(item => (
-                                <div key={item.id} className="bg-white p-3 rounded-xl border shadow-sm relative group">
-                                    <button onClick={() => setCart(cart.filter(c => c.id !== item.id))} className="absolute top-2 right-2 text-gray-300 hover:text-red-500">✕</button>
-                                    <div className="text-xs font-bold text-gray-800 pr-4 mb-2">{item.name}</div>
-                                    <div className="flex justify-between items-center">
-                                        <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-                                            <button onClick={() => item.quantity > 1 && setCart(cart.map(c => c.id === item.id ? {...c, quantity: c.quantity-1} : c))} className="px-2 text-gray-400">-</button>
-                                            <span className="px-2 text-xs font-bold">{item.quantity}</span>
-                                            <button onClick={() => addToCart(item)} className="px-2 text-gray-400">+</button>
-                                        </div>
-                                        <span className="text-xs font-black text-gray-900">{(item.onlinePrice * item.quantity).toLocaleString()}원</span>
-                                    </div>
+                        <div className="flex gap-2 overflow-x-auto no-scrollbar">
+                            {data.events.map((e, i) => (
+                                <div key={i} className="min-w-[180px] bg-blue-50 border border-blue-100 p-2 rounded-xl">
+                                    <div className="text-[10px] font-bold text-blue-600 mb-1">{e.name}</div>
+                                    <div className="text-[9px] text-gray-500 line-clamp-1">{e.desc}</div>
                                 </div>
                             ))}
                         </div>
-                        {calculationResult && (
-                            <div className="p-5 bg-white border-t space-y-4">
-                                <select value={selectedPromo} onChange={(e) => setSelectedPromo(e.target.value)} 
-                                    className="w-full p-3 bg-gray-50 border-none rounded-xl text-xs font-bold focus:ring-2 focus:ring-indigo-500 outline-none text-indigo-600">
+                    </header>
+
+                    <div className="flex flex-1 overflow-hidden">
+                        {/* 좌측 제품 리스트 */}
+                        <div className="flex-1 flex flex-col p-4 overflow-hidden">
+                            <input 
+                                type="text" placeholder="제품명 또는 단품코드를 검색하세요" 
+                                className="w-full p-3 bg-gray-100 border-none rounded-2xl mb-4 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                onChange={e => setSearch(e.target.value)}
+                            />
+                            <div className="flex gap-2 mb-4 overflow-x-auto no-scrollbar">
+                                {["전체", "게이밍", "워크", "스터디", "리빙"].map(c => (
+                                    <button key={c} onClick={() => setCategory(c)} className={`px-4 py-1.5 rounded-full text-xs font-bold whitespace-nowrap ${category === c ? 'bg-slate-800 text-white' : 'bg-white border text-gray-400'}`}>{c}</button>
+                                ))}
+                            </div>
+                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 overflow-y-auto pr-2 pb-20">
+                                {data.products.filter(p => (category === "전체" || p.series.includes(category)) && (p.name.includes(search) || p.code.includes(search))).map((p, i) => (
+                                    <div key={i} onClick={() => addToCart(p)} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:border-blue-400 cursor-pointer transition-all active:scale-95">
+                                        <div className="text-[9px] font-bold text-blue-400 uppercase mb-1">{p.series}</div>
+                                        <div className="text-xs font-bold text-gray-800 mb-2 truncate">{p.name}</div>
+                                        <div className="text-right">
+                                            <div className="text-[9px] text-gray-300 line-through mb-1">{p.retail.toLocaleString()}원</div>
+                                            <div className="text-sm font-black text-gray-900">{p.online.toLocaleString()}원</div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* 우측 견적함 */}
+                        <aside className="w-80 bg-slate-50 border-l p-4 flex flex-col no-print">
+                            <h2 className="font-bold text-slate-800 mb-4 flex justify-between items-center">견적 대시보드 <span className="text-[10px] bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full">{cart.length}개</span></h2>
+                            <div className="flex-1 overflow-y-auto space-y-2 mb-4 no-scrollbar">
+                                {cart.map(item => (
+                                    <div key={item.code} className="bg-white p-3 rounded-xl shadow-sm border border-gray-100">
+                                        <div className="text-[10px] font-bold text-gray-800 mb-2 truncate">{item.name}</div>
+                                        <div className="flex justify-between items-center">
+                                            <div className="flex items-center bg-gray-100 rounded-lg p-1 gap-2">
+                                                <button onClick={() => setCart(cart.map(c => c.code === item.code ? {...c, count: Math.max(1, c.count-1)} : c))} className="px-1">-</button>
+                                                <span className="text-xs font-bold">{item.count}</span>
+                                                <button onClick={() => addToCart(item)} className="px-1">+</button>
+                                            </div>
+                                            <span className="text-xs font-black">{(item.online * item.count).toLocaleString()}원</span>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="bg-white p-4 rounded-2xl border border-gray-200 space-y-4">
+                                <select className="w-full p-2 bg-gray-50 border-none rounded-lg text-xs font-bold text-blue-600 outline-none" value={selectedPromo} onChange={e => setSelectedPromo(e.target.value)}>
                                     <option value="혜택을 선택하세요">혜택을 선택하세요</option>
                                     <option value="신규 회원 할인 (-5,000원)">신규 회원 할인 (-5,000원)</option>
                                     <option value="단품 3% 할인">단품 3% 할인</option>
                                     <option value="2개 이상 5% 할인">2개 이상 5% 할인</option>
-                                    {storeData.coupons.map(c => <option key={c.name} value={c.name}>[{c.name}] {Math.round(c.discountRate*100)}% 할인</option>)}
+                                    <option value="쿠폰 3단계 (7%) 할인">쿠폰 3단계 (7%) 할인</option>
+                                    <option value="쿠폰 4단계 (10%) 할인">쿠폰 4단계 (10%) 할인</option>
+                                    <option value="쿠폰 6단계 (15%) 할인">쿠폰 6단계 (15%) 할인</option>
                                 </select>
-                                <div className="text-right space-y-1">
-                                    <div className="text-[10px] text-gray-300">정상가 {calculationResult.totalRetailPrice.toLocaleString()}원</div>
-                                    <div className="text-2xl font-black text-indigo-600 tracking-tighter">{calculationResult.finalTotalPrice.toLocaleString()}원</div>
+                                <div className="text-right border-t pt-3">
+                                    <div className="text-[10px] text-gray-300">정상가 {calculation.totalRetail.toLocaleString()}원</div>
+                                    <div className="text-2xl font-black text-blue-600 tracking-tighter">{calculation.finalPrice.toLocaleString()}원</div>
                                     <div className="flex justify-end gap-2 text-[9px] font-bold">
-                                        <span className="text-purple-400">정상가 대비 {calculationResult.retailDiscountRate.toFixed(1)}%</span>
-                                        <span className="text-emerald-400">온라인 대비 {calculationResult.onlineDiscountRate.toFixed(1)}%</span>
+                                        <span className="text-purple-400">정상 대비 -{calculation.offRetail}%</span>
+                                        <span className="text-emerald-400">온라인 대비 -{calculation.offOnline}%</span>
                                     </div>
                                 </div>
-                                <div className="flex gap-2">
-                                    <button onClick={() => {if(cart.length > 0) setSavedQuotes([...savedQuotes, {cart, selectedPromo, total: calculationResult.finalTotalPrice}].slice(-3));}} className="flex-1 py-3 bg-gray-100 rounded-xl text-xs font-bold text-gray-400 hover:bg-gray-200">기억하기</button>
-                                    <button onClick={handleDownloadPdf} className="flex-[2] py-3 bg-gray-900 text-white rounded-xl text-xs font-bold shadow-xl">견적서 저장</button>
-                                </div>
+                                <button onClick={() => window.print()} className="w-full bg-slate-900 text-white py-3 rounded-xl font-bold text-xs shadow-lg active:scale-95 transition-all">견적서 저장 (PDF)</button>
                             </div>
-                        )}
-                    </aside>
+                        </aside>
+                    </div>
+                </div>
+            );
+        }
 
-                    {/* PDF 템플릿 영역 (숨김) */}
-                    <div id="pdf-template" className="hidden fixed bg-white p-10 w-[800px] text-black">
-                        <div className="border-b-4 border-black pb-5 mb-10 flex justify-between items-end">
-                            <div className="text-4xl font-black">SIDIZ</div>
-                            <div className="text-right">
-                                <h1 className="text-2xl font-bold">견적 상세 내역</h1>
-                                <p className="text-sm text
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
