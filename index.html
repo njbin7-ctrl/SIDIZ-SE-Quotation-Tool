@@ -8,12 +8,12 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700;900&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Noto Sans KR', sans-serif; height: 100vh; overflow: hidden; background-color: #f8fafc; }
+        body { font-family: 'Noto Sans KR', sans-serif; height: 100vh; overflow: hidden; background-color: #f8fafc; margin: 0; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
-        .sidebar-shadow { box-shadow: -4px 0 20px rgba(0,0,0,0.05); }
-        .product-card:hover { transform: translateY(-4px); border-color: #3b82f6; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+        .sidebar-shadow { box-shadow: -10px 0 30px rgba(0,0,0,0.05); }
+        .product-card:hover { transform: translateY(-4px); border-color: #3b82f6; box-shadow: 0 10px 20px rgba(0,0,0,0.05); }
     </style>
 </head>
 <body>
@@ -22,6 +22,7 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
 
+        // 구글 시트 연결 정보
         const SHEET_ID = "1af5u1NNvYs_ygLw3CnfWiZrp_IkvLcmUs1edO52p1kU";
         const GID = "1647057314";
         const CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${GID}`;
@@ -32,245 +33,209 @@
             const [selectedPromo, setSelectedPromo] = useState("혜택을 선택하세요");
             const [search, setSearch] = useState("");
             const [category, setCategory] = useState("전체");
-            const [status, setStatus] = useState({ loading: true, error: null });
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
             
-            // [MODIFIED] 로컬 스토리지에서 저장된 견적 불러오기
+            // 저장된 견적 (브라우저 기억)
             const [savedQuotes, setSavedQuotes] = useState(() => {
-                const quotes = localStorage.getItem('sidizSavedQuotes');
-                return quotes ? JSON.parse(quotes) : [];
+                try {
+                    const saved = localStorage.getItem('sidiz_saved_v1');
+                    return saved ? JSON.parse(saved) : [];
+                } catch(e) { return []; }
             });
 
-            const [isPromoExpanded, setIsPromoExpanded] = useState(false);
-
+            // 데이터 불러오기
             useEffect(() => {
                 const loadData = async () => {
                     try {
-                        const response = await fetch(CSV_URL);
-                        const csvText = await response.text();
-                        const rows = csvText.split('\n').map(row => 
-                            row.split(',').map(cell => cell.replace(/^"(.*)"$/, '$1'))
+                        const res = await fetch(CSV_URL);
+                        if (!res.ok) throw new Error("시트 공유 설정을 확인해주세요.");
+                        const text = await res.text();
+                        
+                        // 단순 쉼표 분리 (데이터 정제)
+                        const rows = text.split('\n').map(row => 
+                            row.split(',').map(cell => cell.replace(/^"|"$/g, '').trim())
                         );
 
-                        const naverLive = rows[4] ? rows[4][1] : "";
+                        const naverLive = rows[4]?.[1] || "일정 확인 중";
                         const events = [
-                            { name: rows[9][1], details: rows[11][1] },
-                            { name: rows[9][2], details: rows[11][2] },
-                            { name: rows[9][3], details: rows[11][3] },
-                            { name: rows[9][4], details: rows[11][4] }
-                        ].filter(e => e.name);
+                            { name: rows[9]?.[1], desc: rows[11]?.[1] },
+                            { name: rows[9]?.[2], desc: rows[11]?.[2] },
+                            { name: rows[9]?.[3], desc: rows[11]?.[3] },
+                            { name: rows[9]?.[4], desc: rows[11]?.[4] }
+                        ].filter(e => e.name && e.name !== "undefined");
 
-                        // [ADD] 쿠폰 데이터 추출 (16행 G~L열)
-                        const coupons = rows[15] ? rows[15].slice(6, 12).map((rate, i) => ({
-                            name: `쿠폰 ${i+1}단계`,
-                            discountRate: parseFloat(rate.replace('%', '')) / 100
-                        })).filter(c => !isNaN(c.discountRate)) : [];
-
-                        const products = rows.slice(29).filter(r => r[2]).map(r => ({
-                            series: r[0],
-                            sub: r[1],
+                        const products = rows.slice(29).filter(r => r[2] && r[2] !== "제품명").map(r => ({
+                            series: r[0] || "기타",
+                            sub: r[1] || "",
                             name: r[2],
                             code: r[3],
-                            retail: parseInt(r[4]?.replace(/,/g, '')) || 0,
-                            online: parseInt(r[5]?.replace(/,/g, '')) || 0
+                            retail: parseInt(r[4]?.replace(/[^0-9]/g, '')) || 0,
+                            online: parseInt(r[5]?.replace(/[^0-9]/g, '')) || 0
                         }));
 
-                        setData({ products, events, naverLive, coupons });
-                        setStatus({ loading: false, error: null });
+                        setData({ products, events, naverLive });
+                        setError(null);
                     } catch (err) {
-                        setStatus({ loading: false, error: "데이터를 불러오지 못했습니다. 시트 권한을 확인해주세요." });
+                        setError(err.message);
+                    } finally {
+                        setLoading(false);
                     }
                 };
                 loadData();
             }, []);
 
+            // 실시간 계산기
             const calc = useMemo(() => {
-                if (cart.length === 0) return null;
-                const totalRetail = cart.reduce((s, i) => s + (i.retail * i.quantity), 0);
-                const totalOnline = cart.reduce((s, i) => s + (i.online * i.quantity), 0);
-                
-                let final = totalOnline;
+                const retailSum = cart.reduce((acc, cur) => acc + (cur.retail * cur.count), 0);
+                const onlineSum = cart.reduce((acc, cur) => acc + (cur.online * cur.count), 0);
+                let final = onlineSum;
 
                 if (selectedPromo === "신규 회원 할인 (-5,000원)") final -= 5000;
-                else if (selectedPromo.includes("할인")) {
-                    const rateStr = selectedPromo.match(/\d+/);
-                    if (rateStr) final = totalOnline * (1 - parseInt(rateStr[0]) / 100);
-                } else if (selectedPromo.includes("쿠폰")) {
-                    const coupon = data.coupons.find(c => selectedPromo.includes(c.name));
-                    if (coupon) final = totalOnline * (1 - coupon.discountRate);
+                else if (selectedPromo.includes("%")) {
+                    const rate = parseInt(selectedPromo.match(/\d+/)) / 100;
+                    final = onlineSum * (1 - rate);
                 }
 
                 return {
-                    totalRetail,
-                    totalOnline,
-                    final,
-                    offRetail: totalRetail > 0 ? ((1 - final / totalRetail) * 100).toFixed(1) : 0,
-                    offOnline: totalOnline > 0 ? ((1 - final / totalOnline) * 100).toFixed(1) : 0
+                    retailSum, onlineSum, final,
+                    offRetail: retailSum > 0 ? ((1 - final / retailSum) * 100).toFixed(1) : 0,
+                    offOnline: onlineSum > 0 ? ((1 - final / onlineSum) * 100).toFixed(1) : 0
                 };
-            }, [cart, selectedPromo, data.coupons]);
+            }, [cart, selectedPromo]);
 
+            // 기능 함수들
             const addToCart = (p) => {
                 setCart(prev => {
-                    const ext = prev.find(i => i.code === p.code);
-                    if (ext) return prev.map(i => i.code === p.code ? {...i, quantity: i.quantity + 1} : i);
-                    return [...prev, {...p, id: Math.random().toString(36).substr(2, 9), quantity: 1}];
+                    const exists = prev.find(i => i.code === p.code);
+                    if (exists) return prev.map(i => i.code === p.code ? {...i, count: i.count + 1} : i);
+                    return [...prev, {...p, count: 1}];
                 });
             };
 
-            // [MODIFIED] 기억하기 기능 구현
-            const saveQuote = () => {
+            const handleSave = () => {
                 if (cart.length === 0) return;
-                const newQuote = {
-                    id: Date.now(),
-                    cart: [...cart],
-                    promo: selectedPromo,
-                    total: calc.final
-                };
-                const updatedQuotes = [newQuote, ...savedQuotes].slice(0, 3);
-                setSavedQuotes(updatedQuotes);
-                localStorage.setItem('sidizSavedQuotes', JSON.stringify(updatedQuotes));
+                const newQuote = { id: Date.now(), cart: [...cart], promo: selectedPromo, total: calc.final };
+                const updated = [newQuote, ...savedQuotes].slice(0, 3);
+                setSavedQuotes(updated);
+                localStorage.setItem('sidiz_saved_v1', JSON.stringify(updated));
             };
 
-            // [MODIFIED] 이전 견적 불러오기 (Back) 기능 구현
-            const restoreQuote = (quote) => {
-                if (confirm("이전 견적을 불러오시겠습니까? 현재 장바구니 내역은 사라집니다.")) {
-                    setCart(quote.cart);
-                    setSelectedPromo(quote.promo);
-                }
-            };
-
-            const clearCart = () => {
-                if (confirm("견적함을 비우시겠습니까?")) {
-                    setCart([]);
-                    setSelectedPromo("혜택을 선택하세요");
-                }
-            };
-
-            if (status.loading) return <div className="h-screen flex items-center justify-center font-bold text-blue-600 animate-pulse text-lg">SIDIZ SE 스마트 대시보드 로드 중...</div>;
-            if (status.error) return <div className="h-screen flex flex-col items-center justify-center p-10 text-center"><p className="text-red-500 font-bold mb-4">에러: {status.error}</p><p className="text-sm text-gray-500">구글 시트의 [공유] 설정이 "링크가 있는 모든 사용자"로 되어 있는지 확인해주세요.</p></div>;
+            if (loading) return <div className="h-screen flex items-center justify-center font-bold text-blue-600">SIDIZ SE 데이터를 연결 중입니다...</div>;
+            if (error) return <div className="h-screen flex flex-col items-center justify-center p-10"><p className="text-red-500 font-bold mb-2">데이터 연결 오류</p><p className="text-sm text-gray-500">{error}</p></div>;
 
             return (
-                <div className="flex h-screen w-screen overflow-hidden bg-white relative">
-                    {/* [L] 왼쪽 영역 */}
-                    <div className="flex-1 flex flex-col overflow-hidden">
-                        
-                        {/* 섹션 1: 상단 프로모션 영역 (고정) */}
-                        <header className="p-5 border-b border-gray-100 flex-shrink-0 relative">
-                            <div className="flex justify-between items-center mb-5">
-                                <h1 className="text-2xl font-black text-slate-800 tracking-tighter cursor-pointer" onClick={() => window.location.reload()}>SIDIZ <span className="text-blue-600 font-black">SE</span></h1>
-                                <div className="bg-[#03C75A] text-white px-4 py-1.5 rounded-full text-sm font-black shadow-sm flex items-center gap-2 border-2 border-white">
-                                    <span className="text-[10px] opacity-80 font-bold uppercase tracking-wider">Naver Live</span> {data.naverLive}
+                <div className="flex h-screen w-screen bg-white">
+                    {/* [좌측 영역] */}
+                    <div className="flex-1 flex flex-col min-w-0">
+                        {/* 섹션 1: 상단 헤더 */}
+                        <header className="p-6 border-b border-gray-100 flex-shrink-0">
+                            <div className="flex justify-between items-center mb-6">
+                                <h1 className="text-2xl font-black text-slate-800 tracking-tighter">SIDIZ <span className="text-blue-600 font-black">SE</span></h1>
+                                <div className="bg-[#03C75A] text-white px-4 py-1.5 rounded-full text-sm font-black shadow-sm">
+                                    LIVE: {data.naverLive}
                                 </div>
                             </div>
-                            <div className="flex gap-3 overflow-x-auto no-scrollbar relative">
+                            <div className="flex gap-3 overflow-x-auto no-scrollbar">
                                 {data.events.map((e, i) => (
-                                    <div key={i} className="min-w-[220px] bg-blue-50/50 border border-blue-100 p-3 rounded-2xl">
-                                        <div className="text-[11px] font-black text-blue-600 mb-1">{e.name}</div>
-                                        <div className="text-[10px] text-slate-500 font-medium leading-tight line-clamp-1">{e.details}</div>
+                                    <div key={i} className="min-w-[240px] bg-blue-50/50 border border-blue-100 p-4 rounded-2xl">
+                                        <div className="text-[12px] font-black text-blue-700 mb-1">{e.name}</div>
+                                        <div className="text-[10px] text-slate-500 leading-tight">{e.desc}</div>
                                     </div>
                                 ))}
                             </div>
                         </header>
 
-                        {/* 섹션 2: 제품 탐색 영역 (스크롤) */}
-                        <main className="flex-1 flex flex-col p-6 overflow-hidden bg-gray-50/30">
-                            <div className="max-w-[1200px] w-full mx-auto flex flex-col h-full relative">
-                                <input 
-                                    type="text" value={search} onChange={e => setSearch(e.target.value)}
-                                    placeholder="제품명 또는 단품코드를 검색하세요 (예: T50, GPRO)" 
-                                    className="w-full p-4 pl-12 bg-white border border-gray-200 rounded-2xl mb-5 text-base focus:ring-4 focus:ring-blue-500/10 outline-none shadow-sm transition-all"
-                                />
-                                <i className="w-5 h-5 absolute left-4 top-4.5 text-gray-400">🔍</i>
-                                <div className="flex gap-2 mb-5 overflow-x-auto no-scrollbar relative">
-                                    {["전체", "게이밍", "워크", "스터디", "리빙"].map(c => (
-                                        <button key={c} onClick={() => setCategory(c)} className={`px-5 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap ${category === c ? 'bg-slate-800 text-white shadow-lg' : 'bg-white border text-slate-400 hover:bg-gray-50'}`}>{c}</button>
-                                    ))}
-                                </div>
-                                <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 overflow-y-auto pr-2 pb-20 no-scrollbar relative">
-                                    {data.products.filter(p => (category === "전체" || p.series.includes(category)) && (p.name.includes(search) || p.code.includes(search))).map((p, i) => (
-                                        <div key={i} onClick={() => addToCart(p)} className="product-card bg-white p-5 rounded-3xl border border-gray-100 shadow-sm cursor-pointer transition-all flex flex-col h-full relative">
-                                            <div className="text-[10px] font-black text-blue-400 uppercase mb-1 tracking-wider">{p.series}</div>
-                                            <div className="text-sm font-bold text-slate-800 mb-3 line-clamp-2 leading-snug h-10">{p.name}</div>
-                                            <div className="mt-auto border-t pt-3 flex justify-between items-end relative">
-                                                <div>
-                                                    <div className="text-[10px] text-slate-300 line-through mb-1">{p.retail.toLocaleString()}원</div>
-                                                    <div className="text-base font-black text-slate-900 leading-none">{p.online.toLocaleString()}원</div>
-                                                </div>
-                                                <div className="w-8 h-8 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center font-bold shadow-inner relative group-hover:bg-blue-600 group-hover:text-white transition-colors">＋</div>
+                        {/* 섹션 2: 제품 목록 */}
+                        <main className="flex-1 flex flex-col p-6 overflow-hidden bg-slate-50/30">
+                            <input 
+                                type="text" placeholder="제품명 또는 단품코드를 검색하세요" 
+                                className="w-full p-4 bg-white border border-gray-200 rounded-2xl mb-6 text-base shadow-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                onChange={e => setSearch(e.target.value)}
+                            />
+                            <div className="flex gap-2 mb-6 overflow-x-auto no-scrollbar">
+                                {["전체", "게이밍", "워크", "스터디", "리빙"].map(c => (
+                                    <button key={c} onClick={() => setCategory(c)} className={`px-6 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap ${category === c ? 'bg-slate-800 text-white shadow-lg' : 'bg-white border text-slate-400'}`}>{c}</button>
+                                ))}
+                            </div>
+                            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 overflow-y-auto pr-2 pb-20 no-scrollbar">
+                                {data.products.filter(p => (category === "전체" || p.series.includes(category)) && (p.name.includes(search) || p.code.includes(search))).map((p, i) => (
+                                    <div key={i} onClick={() => addToCart(p)} className="product-card bg-white p-5 rounded-3xl border border-gray-100 shadow-sm cursor-pointer transition-all flex flex-col h-full">
+                                        <div className="text-[10px] font-black text-blue-400 uppercase mb-1">{p.series}</div>
+                                        <div className="text-sm font-bold text-slate-800 mb-4 line-clamp-2 h-10 leading-snug">{p.name}</div>
+                                        <div className="mt-auto border-t pt-4 flex justify-between items-end">
+                                            <div>
+                                                <div className="text-[10px] text-slate-300 line-through mb-1">{p.retail.toLocaleString()}원</div>
+                                                <div className="text-base font-black text-slate-900 leading-none">{p.online.toLocaleString()}원</div>
                                             </div>
+                                            <div className="w-8 h-8 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center font-bold">+</div>
                                         </div>
-                                    ))}
-                                </div>
+                                    </div>
+                                ))}
                             </div>
                         </main>
                     </div>
 
-                    {/* 섹션 3: 견적 대시보드 */}
-                    <aside className="w-80 sidebar-shadow bg-white z-20 flex flex-col h-full sidebar relative">
-                        <div className="p-6 border-b flex justify-between items-center bg-white relative">
-                            <h2 className="font-black text-slate-800 flex items-center gap-2 text-lg relative">🛒 견적함 <span className="text-xs bg-blue-600 text-white px-2 py-0.5 rounded-full relative">{cart.length}개</span></h2>
-                            <button onClick={clearCart} className="text-[10px] font-bold text-slate-300 hover:text-red-400 transition-colors uppercase relativeClear">비우기</button>
+                    {/* [우측 영역] 섹션 3: 견적 대시보드 */}
+                    <aside className="w-[360px] sidebar-shadow bg-white z-20 flex flex-col h-full">
+                        <div className="p-6 border-b flex justify-between items-center h-[88px]">
+                            <h2 className="font-black text-slate-800 text-lg flex items-center gap-2">🛒 견적 대시보드 <span className="text-xs bg-blue-600 text-white px-2 py-0.5 rounded-full">{cart.length}</span></h2>
+                            <button onClick={() => setCart([])} className="text-[10px] font-bold text-slate-300 hover:text-red-400 uppercase">Clear</button>
                         </div>
                         
-                        <div className="flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar bg-slate-50/50 relativeCartItems">
+                        <div className="flex-1 overflow-y-auto p-5 space-y-4 no-scrollbar bg-slate-50/50">
                             {cart.map(item => (
-                                <div key={item.code} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-50 flex flex-col gap-3 relative group">
-                                    <button onClick={() => setCart(cart.filter(c => c.id !== item.id))} className="absolute top-2 right-2 text-slate-200 hover:text-red-400 group-hover:text-slate-300 relativeRemoveItem">✕</button>
-                                    <div className="text-xs font-bold text-slate-700 leading-tight pr-4 truncate relativeItemName">{item.name}</div>
-                                    <div className="flex justify-between items-center relative">
-                                        <div className="flex items-center bg-gray-100 rounded-xl px-2 py-1 gap-3 relativeItemQty">
-                                            <button onClick={() => setCart(cart.map(c => c.id === item.id ? {...c, quantity: Math.max(1, c.count-1)} : c))} className="text-slate-400 font-bold relativeItemMinus">-</button>
-                                            <span className="text-xs font-black text-slate-700 relativeItemCount">{item.quantity}</span>
-                                            <button onClick={() => addToCart(item)} className="text-slate-400 font-bold relativeItemPlus">+</button>
+                                <div key={item.code} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col gap-3 relative">
+                                    <button onClick={() => setCart(cart.filter(c => c.code !== item.code))} className="absolute top-3 right-3 text-slate-200 hover:text-red-400 font-bold">✕</button>
+                                    <div className="text-xs font-bold text-slate-700 leading-tight pr-4">{item.name}</div>
+                                    <div className="flex justify-between items-center">
+                                        <div className="flex items-center bg-slate-100 rounded-xl px-3 py-1 gap-4">
+                                            <button onClick={() => setCart(cart.map(c => c.code === item.code ? {...c, count: Math.max(1, c.count-1)} : c))} className="text-slate-400 font-bold">-</button>
+                                            <span className="text-xs font-black text-slate-800">{item.count}</span>
+                                            <button onClick={() => addToCart(item)} className="text-slate-400 font-bold">+</button>
                                         </div>
-                                        <span className="text-xs font-black text-slate-900 relativeItemPrice">{(item.online * item.quantity).toLocaleString()}원</span>
+                                        <span className="text-xs font-black text-slate-900">{(item.online * item.count).toLocaleString()}원</span>
                                     </div>
                                 </div>
                             ))}
-                            {cart.length === 0 && <div className="h-full flex flex-col items-center justify-center opacity-20 mt-20 font-bold text-xs text-center relative"><span className="text-4xl mb-4 relative">🪑</span><p>제품을 담아주세요</p></div>}
+                            {cart.length === 0 && <div className="h-full flex flex-col items-center justify-center opacity-20 mt-20 font-bold text-xs"><p>제품을 담아주세요</p></div>}
                         </div>
 
-                        {calc && (
-                            <div className="p-6 bg-white border-t space-y-5 shadow-[0_-10px_30px_rgba(0,0,0,0.03)] relativeSummary">
-                                <div className="space-y-2 relativePromoSelect">
-                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 relative">최종 혜택 선택</label>
-                                    <select value={selectedPromo} onChange={e => setSelectedPromo(e.target.value)} 
-                                        className="w-full p-3 bg-gray-50 border-none rounded-xl text-xs font-black text-blue-600 focus:ring-2 focus:ring-indigo-500 outline-none relative">
-                                        <option value="혜택을 선택하세요">혜택을 선택하세요</option>
-                                        <option value="신규 회원 할인 (-5,000원)">신규 회원 할인 (-5,000원)</option>
-                                        <option value="단품 구매 할인 (3%)">단품 구매 할인 (3%)</option>
-                                        <option value="세트/2개 이상 할인 (5%)">세트/2개 이상 할인 (5%)</option>
-                                        {data.coupons.map(c => <option key={c.name} value={c.name}>[{c.name}] {Math.round(c.discountRate*100)}% 할인</option>)}
-                                    </select>
-                                </div>
-
-                                <div className="text-right border-t border-dashed pt-4 relativePrices">
-                                    <div className="text-[10px] text-slate-300 relativeMsrp">정상가 {calc.totalRetail.toLocaleString()}원</div>
-                                    <div className="text-2xl font-black text-blue-600 tracking-tighter mb-2 relativeFinalPrice">{calc.final.toLocaleString()}원</div>
-                                    <div className="flex flex-col gap-1 items-end relativeDiscountTags">
-                                        <span className="text-[10px] font-black bg-purple-50 text-purple-500 px-2 py-1 rounded-lg relativeOffMsrp">정상 대비 -{calc.offRetail}%</span>
-                                        <span className="text-[10px] font-black bg-emerald-50 text-emerald-500 px-2 py-1 rounded-lg relativeOffOnline">온라인 대비 -{calc.offOnline}%</span>
-                                    </div>
-                                </div>
-
-                                {/* [MODIFIED] 기억하기 및 저장 슬롯 영역 */}
-                                <div className="grid grid-cols-2 gap-2 pt-2 relativeButtons">
-                                    <button onClick={saveQuote} disabled={savedQuotes.length >= 3} className="py-3 bg-gray-100 text-slate-500 rounded-xl text-xs font-bold hover:bg-slate-200 transition-all disabled:opacity-50 disabled:cursor-not-allowed relativeMemory">기억하기</button>
-                                    <button onClick={() => window.print()} className="py-3 bg-slate-900 text-white rounded-xl text-xs font-black shadow-xl shadow-slate-200 active:scale-95 transition-all relativeSave">견적서 저장</button>
-                                </div>
-                                
-                                {savedQuotes.length > 0 && (
-                                    <div className="flex gap-1.5 overflow-x-auto no-scrollbar pt-2 border-t border-dashed relativeSlots">
-                                        {savedQuotes.map((q, i) => (
-                                            <button key={q.id} onClick={() => restoreQuote(q)} className="relative flex-shrink-0 bg-blue-50/50 border border-blue-100 p-2 rounded-lg text-[9px] font-black text-blue-500 hover:bg-blue-100/50 transition-colors relativeSlotItem">
-                                                <span onClick={(e) => { e.stopPropagation(); setSavedQuotes(prev => { const res = prev.filter(quote => quote.id !== q.id); localStorage.setItem('sidizSavedQuotes', JSON.stringify(res)); return res; }); }} className="absolute -top-1.5 -right-1.5 text-blue-300 hover:text-red-400 font-bold relativeRemoveSlot">✕</span>
-                                                #{savedQuotes.length-i} ({Math.round(q.total / 10000)}만)
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
+                        <div className="p-6 bg-white border-t space-y-5 shadow-[0_-10px_40px_rgba(0,0,0,0.04)]">
+                            <div className="space-y-2">
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Overall Benefit</label>
+                                <select className="w-full p-3.5 bg-slate-50 border-none rounded-2xl text-xs font-black text-blue-600 focus:ring-2 focus:ring-blue-500 outline-none" value={selectedPromo} onChange={e => setSelectedPromo(e.target.value)}>
+                                    <option value="혜택을 선택하세요">혜택을 선택하세요</option>
+                                    <option value="신규 회원 할인 (-5,000원)">신규 회원 할인 (-5,000원)</option>
+                                    <option value="단품 3% 할인">단품 3% 할인</option>
+                                    <option value="2개 이상 5% 할인">2개 이상 5% 할인</option>
+                                    <option value="쿠폰 3단계 (7%) 할인">쿠폰 3단계 (7%) 할인</option>
+                                    <option value="쿠폰 4단계 (10%) 할인">쿠폰 4단계 (10%) 할인</option>
+                                    <option value="쿠폰 6단계 (15%) 할인">쿠폰 6단계 (15%) 할인</option>
+                                </select>
                             </div>
-                        )}
-                    </div>
+
+                            <div className="text-right pt-2 border-t border-dashed border-gray-100">
+                                <div className="text-[10px] font-bold text-slate-300 mb-1">정상가 {calc.retailSum.toLocaleString()}원</div>
+                                <div className="text-3xl font-black text-blue-600 tracking-tighter mb-3">{calc.final.toLocaleString()}원</div>
+                                <div className="flex flex-col gap-1 items-end">
+                                    <span className="text-[10px] font-black bg-purple-50 text-purple-500 px-2 py-1 rounded-lg">정상 대비 -{calc.offRetail}%</span>
+                                    <span className="text-[10px] font-black bg-emerald-50 text-emerald-500 px-2 py-1 rounded-lg">온라인 대비 -{calc.offOnline}%</span>
+                                </div>
+                            </div>
+
+                            <div className="flex gap-2 pt-2">
+                                <button onClick={handleSave} className="flex-1 py-4 bg-slate-100 text-slate-400 rounded-2xl text-[10px] font-black hover:bg-slate-200 transition-all uppercase">Memory</button>
+                                <button onClick={() => window.print()} className="flex-[2] py-4 bg-slate-900 text-white rounded-2xl text-xs font-black shadow-xl active:scale-95 transition-all">견적서 저장</button>
+                            </div>
+                            
+                            <div className="flex gap-1.5 overflow-x-auto no-scrollbar pt-2">
+                                {savedQuotes.map((q, i) => (
+                                    <button key={q.id} onClick={() => { if(confirm("이전 견적을 불러올까요?")) {setCart(q.cart); setSelectedPromo(q.promo);} }} className="flex-shrink-0 bg-blue-50 text-[9px] px-3 py-2 rounded-xl border border-blue-100 font-bold text-blue-500">#{savedQuotes.length-i} ({Math.round(q.total/10000)}만)</button>
+                                ))}
+                            </div>
+                        </div>
+                    </aside>
                 </div>
             );
         }
